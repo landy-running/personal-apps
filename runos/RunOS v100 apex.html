@@ -871,6 +871,15 @@ function save(){
     return false;
   }
 }
+function saveFailureText(){
+  return STORAGE_RECOVERY&&STORAGE_RECOVERY.active
+    ?'リカバリ中のため保存を停止しています'
+    :'保存できませんでした';
+}
+function notifySaveResult(saved,successMessage){
+  flash(saved?successMessage:saveFailureText());
+  return saved;
+}
 
 /* ---------- small utils ---------- */
 const pad=n=>String(n).padStart(2,'0');
@@ -1804,13 +1813,13 @@ function wireWellness(){
     const g=id=>{ const v=parseFloat(el(id).value); return isNaN(v)?null:v; };
     const prev=DB.wellness.find(x=>x.date===t)||{};
     const w={...prev, date:t, hrv:g('w-hrv'), rhr:g('w-rhr'), sleep:g('w-sleep'), soreness:g('w-sore')!=null?g('w-sore'):prev.soreness};
-    DB.wellness=DB.wellness.filter(x=>x.date!==t); DB.wellness.push(w); save();
-    flash('記録しました'); renderToday(); };
+    DB.wellness=DB.wellness.filter(x=>x.date!==t); DB.wellness.push(w);
+    notifySaveResult(save(),'記録しました'); renderToday(); };
   document.querySelectorAll('[data-qt]').forEach(b=>b.onclick=e=>{ e.stopPropagation();
     const [k,v]=b.dataset.qt.split(':'); const t=todayISO();
     const prev=DB.wellness.find(x=>x.date===t)||{date:t};
-    prev[k]=parseInt(v); DB.wellness=DB.wellness.filter(x=>x.date!==t); DB.wellness.push(prev); save();
-    flash('Readinessに反映しました'); renderToday(); });
+    prev[k]=parseInt(v); DB.wellness=DB.wellness.filter(x=>x.date!==t); DB.wellness.push(prev);
+    notifySaveResult(save(),'Readinessに反映しました'); renderToday(); });
 }
 
 function wireTodayHybrid(){
@@ -1820,7 +1829,7 @@ function wireTodayHybrid(){
     try{ const spec=todayWorkoutSpec();
       if(spec) openWorkoutCard(spec); else flash('今日は休養日。モビリティやバイクが◎'); }
     catch(err){ flash('走力データが増えると詳細を表示できます'); } };
-  const ob=el('obDemo'); if(ob) ob.onclick=()=>{ seedDemo(); route(); flash('デモデータを生成しました'); };
+  const ob=el('obDemo'); if(ob) ob.onclick=()=>{ const saved=seedDemo(); route(); notifySaveResult(saved,'デモデータを生成しました'); };
   { const seen=()=>{ DB.ui=DB.ui||{}; DB.ui.reviewSeenWeek=weekKey(todayISO()); save(); };
     const rd=el('revDismiss'); if(rd) rd.onclick=(e)=>{e.stopPropagation(); seen(); renderToday();};
     const rg=el('revGo'); if(rg) rg.onclick=()=>{ seen(); }; }
@@ -1850,13 +1859,17 @@ function applyTodayAdjustment(kind){
   DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[];
   DB.planOverrides[date]={...o,date,original:base.currentTitle||base.title,reason:risk.reasons.slice(0,3),createdAt:new Date().toISOString()};
   DB.adjustLog.push({date,kind,from:base.currentTitle||base.title,to:o.title,at:new Date().toISOString()});
-  save(); closeGB(); renderToday();
-  flashUndo(`今日のメニューを「${o.title}」に変更しました`,()=>{
-    if(prev) DB.planOverrides[date]=prev; else delete DB.planOverrides[date]; save(); renderToday();
+  const saved=save(); closeGB(); renderToday();
+  if(saved) flashUndo(`今日のメニューを「${o.title}」に変更しました`,()=>{
+    if(prev) DB.planOverrides[date]=prev; else delete DB.planOverrides[date];
+    const undoSaved=save(); renderToday(); if(!undoSaved) notifySaveResult(false,'');
   });
+  else notifySaveResult(false,'');
 }
 function clearTodayAdjustment(){
-  const date=todayISO(); if(DB.planOverrides&&DB.planOverrides[date]){ const prev=DB.planOverrides[date]; delete DB.planOverrides[date]; save(); renderToday(); flashUndo('今日の調整を解除しました',()=>{DB.planOverrides[date]=prev; save(); renderToday();}); }
+  const date=todayISO(); if(DB.planOverrides&&DB.planOverrides[date]){ const prev=DB.planOverrides[date]; delete DB.planOverrides[date]; const saved=save(); renderToday();
+    if(saved) flashUndo('今日の調整を解除しました',()=>{DB.planOverrides[date]=prev;const undoSaved=save();renderToday();if(!undoSaved)notifySaveResult(false,'');});
+    else notifySaveResult(false,''); }
 }
 function openWorkoutAdjustDrawer(){
   const base=plannedWorkoutV77(); const reco=coachRecommendationV77(); const risk=loadRiskV77(); const ov=todayOverride();
@@ -2083,8 +2096,8 @@ function renderPlan(){
     const cfg={name:el('pl-name').value.trim(), date:el('pl-date').value,
       dist:el('pl-dist').value, goal:el('pl-goal').value.trim()||null};
     if(!cfg.date||dayDiff(todayISO(),cfg.date)<14){ alert('レース日は2週間以上先に設定してください'); return; }
-    DB.plan=generatePlan(cfg); save(); flash('計画を生成しました'); renderPlan(); };
-  const rg=el('plRegen'); if(rg) rg.onclick=()=>{ DB.plan=generatePlan(DB.plan.race); save(); flash('現在の走力で再生成しました'); renderPlan(); };
+    DB.plan=generatePlan(cfg); notifySaveResult(save(),'計画を生成しました'); renderPlan(); };
+  const rg=el('plRegen'); if(rg) rg.onclick=()=>{ DB.plan=generatePlan(DB.plan.race); notifySaveResult(save(),'現在の走力で再生成しました'); renderPlan(); };
   const dl=el('plDel'); if(dl) dl.onclick=()=>{ if(confirm('計画を削除しますか？')){ DB.plan=null; save(); renderPlan(); } };
   wireSeason();
   document.querySelectorAll('[data-waday]').forEach(x=>x.onclick=e=>{ e.stopPropagation();
@@ -2198,8 +2211,9 @@ function renderLog(){
   el('view-log').querySelectorAll('[data-del]').forEach(b=>b.onclick=e=>{ e.stopPropagation();
     const idx=DB.activities.findIndex(a=>a.id===b.dataset.del);
     if(idx<0) return; lastDeleted={act:DB.activities[idx], idx};
-    DB.activities.splice(idx,1); save(); renderLog();
-    flashUndo('1本削除しました', ()=>{ if(lastDeleted){ DB.activities.splice(lastDeleted.idx,0,lastDeleted.act); lastDeleted=null; save(); renderLog(); } }); });
+    DB.activities.splice(idx,1); const saved=save(); renderLog();
+    if(saved) flashUndo('1本削除しました', ()=>{ if(lastDeleted){ DB.activities.splice(lastDeleted.idx,0,lastDeleted.act); lastDeleted=null;const undoSaved=save();renderLog();if(!undoSaved)notifySaveResult(false,''); } });
+    else notifySaveResult(false,''); });
   el('view-log').querySelectorAll('[data-open]').forEach(r=>r.onclick=()=>{ location.hash='activity/'+encodeURIComponent(r.dataset.open); });
 }
 function shiftYM(d){ const [y,m]=LOGVIEW.ym.split('-').map(Number); const dt=new Date(y,m-1+d,1);
@@ -2220,7 +2234,7 @@ function addRun(){
   const a={ id:'a'+Date.now(), date:el('f-date').value, type:el('f-type').value,
     km, durSec, hrAvg:parseInt(el('f-hr').value)||null,
     elevM:parseInt(el('f-elev').value)||0, rpe:null, note:'' };
-  DB.activities.push(a); save(); renderLog(); renderToday();
+  DB.activities.push(a); notifySaveResult(save(),'ランを記録しました'); renderLog(); renderToday();
 }
 
 function renderInsights(){
@@ -2365,8 +2379,8 @@ function renderInsights(){
         <td class="n">${round(c.e,1)}</td><td class="n">${round(c.w*100,0)}%</td></tr>`).join('')}</tbody></table></div></div>`;
   document.querySelectorAll('[data-prd]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); PRPROG.d=parseInt(b.dataset.prd); renderInsights(); });
   document.querySelectorAll('[data-adopt]').forEach(b=>b.onclick=e=>{ e.stopPropagation();
-    DB.profile.fitnessSource=b.dataset.adopt; save(); renderInsights();
-    flash(b.dataset.adopt==='auto'?'走力の採用を自動に戻しました':'走力の採用源を切り替えました'); });
+    DB.profile.fitnessSource=b.dataset.adopt; const saved=save(); renderInsights();
+    notifySaveResult(saved,b.dataset.adopt==='auto'?'走力の採用を自動に戻しました':'走力の採用源を切り替えました'); });
   wireGB();
 }
 
@@ -2537,7 +2551,7 @@ function renderSettings(){
       hrRest:parseInt(el('p-hrrest').value)||44, ltHr:gi('p-lthr'),
       experience:el('p-exp').value, vo2maxLab:gf('p-vo2lab'), injuryProne:el('p-injury').checked,
       thresholdPaceSec: t.length===2? t[0]*60+t[1] : 255 };
-    save(); flash('プロフィールを保存しました'); renderToday(); };
+    notifySaveResult(save(),'プロフィールを保存しました'); renderToday(); };
   el('exportBtn').onclick=()=>{ const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'}); const fname='runos-backup-'+todayISO()+'.json';
     const u=URL.createObjectURL(blob); const a=document.createElement('a');
     a.href=u; a.download=fname; a.click(); URL.revokeObjectURL(u); };
@@ -2550,19 +2564,19 @@ function renderSettings(){
     a.href=u; a.download='runos-v77-meridian-activities.csv'; a.click(); URL.revokeObjectURL(u); };
   el('importBtn').onclick=()=>el('importFile').click();
   el('importFile').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader();
-    r.onload=()=>{ try{ DB=JSON.parse(r.result); save(); route(); flash('取り込みました'); }catch(err){ alert('読み込めませんでした'); } }; r.readAsText(f); };
-  { const sb=el('seedBtn2'); if(sb) sb.onclick=()=>{ if(confirm('デモデータを再生成します。現在のデータは上書きされます。')){ seedDemo(); route(); flash('デモデータを再生成しました'); } };
-    const wb=el('wipeBtn2'); if(wb) wb.onclick=()=>{ if(confirm('全データを消去します。よろしいですか？')){ DB={profile:{...DEFAULT_PROFILE},activities:[],wellness:[],plan:null,planOverrides:{},adjustLog:[],shoes:[],env:{temp:20,humidity:50,altitude:0},races:[]}; save(); route(); flash('消去しました'); } }; }
-  { const ab=el('shoeAddBtn'); if(ab) ab.onclick=()=>{ const v=el('shoeAdd').value; if(v==='')return; addShoeFromCatalog(parseInt(v)); flash('シューズを追加しました'); renderSettings(); };
+    r.onload=()=>{ try{ DB=JSON.parse(r.result); const saved=save(); route(); notifySaveResult(saved,'取り込みました'); }catch(err){ alert('読み込めませんでした'); } }; r.readAsText(f); };
+  { const sb=el('seedBtn2'); if(sb) sb.onclick=()=>{ if(confirm('デモデータを再生成します。現在のデータは上書きされます。')){ const saved=seedDemo(); route(); notifySaveResult(saved,'デモデータを再生成しました'); } };
+    const wb=el('wipeBtn2'); if(wb) wb.onclick=()=>{ if(confirm('全データを消去します。よろしいですか？')){ DB={profile:{...DEFAULT_PROFILE},activities:[],wellness:[],plan:null,planOverrides:{},adjustLog:[],shoes:[],env:{temp:20,humidity:50,altitude:0},races:[]}; const saved=save(); route(); notifySaveResult(saved,'消去しました'); } }; }
+  { const ab=el('shoeAddBtn'); if(ab) ab.onclick=()=>{ const v=el('shoeAdd').value; if(v==='')return; const res=addShoeFromCatalog(parseInt(v)); notifySaveResult(!!(res&&res.saved),'シューズを追加しました'); renderSettings(); };
     document.querySelectorAll('[data-retire]').forEach(b=>b.onclick=()=>{ const s=(DB.shoes||[]).find(x=>x.id===b.dataset.retire); if(s){ s.active=s.active===false; save(); renderSettings(); } }); }
   { const es=el('envSave'); if(es) es.onclick=()=>{ const gi=id=>{const v=parseFloat(el(id).value);return isNaN(v)?null:v;};
-    DB.env={temp:gi('env-temp')??20, humidity:gi('env-hum')??50, altitude:gi('env-alt')??0}; save(); flash('環境補正を適用しました'); renderSettings(); renderCoach&&0; }; }
+    DB.env={temp:gi('env-temp')??20, humidity:gi('env-hum')??50, altitude:gi('env-alt')??0}; notifySaveResult(save(),'環境補正を適用しました'); renderSettings(); renderCoach&&0; }; }
   { const g=el('envGeo'); if(g) g.onclick=async()=>{ try{ await saveGeo(); flash('現在地を保存しました'); renderSettings(); }catch(e){ flash(e.message); } };
     const w=el('envWx'); if(w) w.onclick=async()=>{ try{ if(DB.env.lat==null) await saveGeo(); await fetchWeatherNow(); flash(`天気: ${round(DB.env.temp,0)}℃ / ${DB.env.humidity}%`); renderSettings(); }catch(e){ flash(e.message||'取得できませんでした'); } };
     const sb=el('stravaCsvBtn'); if(sb) sb.onclick=()=>el('stravaCsvFile').click();
     const sf=el('stravaCsvFile'); if(sf) sf.onchange=e=>{ const f=e.target.files[0]; if(!f)return;
       const r=new FileReader(); r.onload=()=>{ const res=importStravaCSV(r.result);
-        if(res.error) flash(res.error); else { flash(`Strava: ${res.added}件取込 (${res.skipped}件スキップ)`); route(); } };
+        if(res.error) flash(res.error); else { notifySaveResult(res.saved,`Strava: ${res.added}件取込 (${res.skipped}件スキップ)`); route(); } };
       r.readAsText(f); }; }
   { const rb=el('raceAddBtn'); if(rb) rb.onclick=()=>{
       const parts=el('race-time').value.trim().split(':').map(Number);
@@ -2571,13 +2585,13 @@ function renderSettings(){
       if(sec<=0){ alert('タイムが不正です'); return; }
       const m=parseFloat(el('race-dist').value);
       DB.races=DB.races||[]; DB.races.push({id:'race_'+Date.now().toString(36), m, sec, date:el('race-date').value||todayISO()});
-      save(); flash('レース結果を追加しました'); renderSettings(); };
+      notifySaveResult(save(),'レース結果を追加しました'); renderSettings(); };
     document.querySelectorAll('[data-delrace]').forEach(b=>b.onclick=()=>{ DB.races=(DB.races||[]).filter(r=>r.id!==b.dataset.delrace); save(); renderSettings(); });
     const ft=el('ftAddBtn'); if(ft) ft.onclick=()=>{
       const km=parseFloat(el('ft-dist').value);
       if(isNaN(km)||km<2||km>8){ alert('20分の距離を 2〜8km で入力してください'); return; }
       DB.races=DB.races||[]; DB.races.push({id:'ft_'+Date.now().toString(36), m:Math.round(km*1000), sec:1200, date:todayISO(), ft:true});
-      save(); flash('フィールドテストを走力アンカーとして採用しました'); renderSettings(); }; }
+      notifySaveResult(save(),'フィールドテストを走力アンカーとして採用しました'); renderSettings(); }; }
   wireGB();
 }
 
@@ -3582,7 +3596,7 @@ function addShoeFromCatalog(idx){
   const c=SHOE_CATALOG[idx]; if(!c) return null;
   const id='shoe_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*1e4).toString(36);
   const shoe={id, brand:c.brand, model:c.model, cat:c.cat, startKm:0, retireKm:catalogRetire(c.cat), active:true, addedAt:todayISO()};
-  DB.shoes=DB.shoes||[]; DB.shoes.push(shoe); save(); return shoe;
+  DB.shoes=DB.shoes||[]; DB.shoes.push(shoe); return {shoe,saved:save()};
 }
 
 /* recommend the best-fit active shoe for a workout category */
@@ -4026,8 +4040,8 @@ function adaptSeason(){
   if(!DB.plan) return;
   const before={peak:DB.plan.peak, startVol:DB.plan.startVol};
   DB.plan=generatePlan(DB.plan.race);
-  save();
-  return {before, after:{peak:DB.plan.peak, startVol:DB.plan.startVol}};
+  const saved=save();
+  return {before, after:{peak:DB.plan.peak, startVol:DB.plan.startVol},saved};
 }
 
 /* ---- the season overview dashboard (top of Season view) ---- */
@@ -4089,7 +4103,7 @@ function seasonOverviewCard(){
 function wireSeason(){
   const iv=el('seasonToIv'); if(iv) iv.onclick=(e)=>{e.stopPropagation(); seasonToDesigner();};
   const a=el('seasonAdapt'); if(a) a.onclick=()=>{ const r=adaptSeason(); renderPlan();
-    flash(r&&r.after.peak!==r.before.peak?`ピーク距離を ${r.before.peak}→${r.after.peak}km に更新`:'現在の走力で再設計しました'); };
+    notifySaveResult(!!(r&&r.saved),r&&r.after.peak!==r.before.peak?`ピーク距離を ${r.before.peak}→${r.after.peak}km に更新`:'現在の走力で再設計しました'); };
   const d=el('seasonDel'); if(d) d.onclick=()=>{ if(confirm('シーズン計画を削除しますか？')){ DB.plan=null; save(); renderPlan(); } };
 }
 
@@ -4560,7 +4574,7 @@ async function fetchWeatherNow(){
   DB.env={...DB.env, temp:Math.round(c.temperature_2m*10)/10, humidity:Math.round(c.relative_humidity_2m),
     wcode:c.weather_code, wind:c.wind_speed_10m!=null?Math.round(c.wind_speed_10m*10)/10:null,
     fetchedAt:new Date().toISOString()};
-  save();
+  if(!save()) throw new Error(saveFailureText());
   return DB.env;
 }
 function saveGeo(){
@@ -4568,7 +4582,7 @@ function saveGeo(){
     if(!navigator.geolocation) return reject(new Error('この環境では位置情報が使えません'));
     navigator.geolocation.getCurrentPosition(pos=>{
       DB.env={...DB.env, lat:Math.round(pos.coords.latitude*1000)/1000, lon:Math.round(pos.coords.longitude*1000)/1000};
-      save(); resolve(DB.env);
+      if(save()) resolve(DB.env); else reject(new Error(saveFailureText()));
     }, err=>reject(new Error('位置情報を取得できませんでした')), {timeout:8000,maximumAge:600000});
   });
 }
@@ -4672,8 +4686,8 @@ function importStravaCSV(text){
   }catch(e){ skipped++; } });
   DB.activities.sort((a,b)=>a.date<b.date?-1:1);
   DB.integrations=DB.integrations||{}; DB.integrations.strava={...(DB.integrations.strava||{}), lastImport:todayISO(), imported:( (DB.integrations.strava&&DB.integrations.strava.imported)||0)+added};
-  save();
-  return {added,skipped};
+  const saved=save();
+  return {added,skipped,saved};
 }
 
 /* ============================================================
@@ -5237,8 +5251,8 @@ async function importFitFiles(files){
       addImportLine(f.name, `${act.date} · ${act.km}km · ${paceStr(act.durSec/act.km)}/km · ${typeJP(act.type)}`,'ok');
     }catch(e){ fail++; addImportLine(f.name,'解析できませんでした: '+e.message,'fail'); }
   }
-  save();
-  flash(`${ok}件取込${dup?` · ${dup}件スキップ`:''}${fail?` · ${fail}件失敗`:''}`);
+  const saved=save();
+  notifySaveResult(saved,`${ok}件取込${dup?` · ${dup}件スキップ`:''}${fail?` · ${fail}件失敗`:''}`);
   if(ok>0) renderLog();   // show new runs in the table; on total failure keep the per-file feedback visible
 }
 function addImportLine(name,msg,status){
@@ -6425,7 +6439,7 @@ function renderActivityDetail(id){
       el('streamHost').innerHTML=streamChart(a); wireStreamHover(a); renderActivityDetail(id); });
     wireStreamHover(a);
   }
-  { const sb=el('actShoeSave'); if(sb) sb.onclick=()=>{ const v=el('actShoe').value; a.shoeId=v||null; save(); flash('シューズを割り当てました'); renderActivityDetail(id); }; }
+  { const sb=el('actShoeSave'); if(sb) sb.onclick=()=>{ const v=el('actShoe').value; a.shoeId=v||null; notifySaveResult(save(),'シューズを割り当てました'); renderActivityDetail(id); }; }
   wireGB();
 }
 function zoneBarsFromStream(a){
@@ -6505,8 +6519,8 @@ function boot(){
   tickClock();
   window.addEventListener('hashchange',route);
   el('drawerX').onclick=closeGB; el('scrim').onclick=closeGB;
-  el('seedBtn').onclick=()=>{ if(confirm('デモデータを再生成します。現在のデータは上書きされます。')){ seedDemo(); route(); flash('デモデータを再生成しました'); } };
-  el('wipeBtn').onclick=()=>{ if(confirm('全データを消去します。よろしいですか？')){ DB={profile:{...DEFAULT_PROFILE},activities:[],wellness:[],plan:null,planOverrides:{},adjustLog:[],shoes:[],env:{temp:20,humidity:50,altitude:0},races:[]}; save(); route(); flash('消去しました'); } };
+  el('seedBtn').onclick=()=>{ if(confirm('デモデータを再生成します。現在のデータは上書きされます。')){ const saved=seedDemo(); route(); notifySaveResult(saved,'デモデータを再生成しました'); } };
+  el('wipeBtn').onclick=()=>{ if(confirm('全データを消去します。よろしいですか？')){ DB={profile:{...DEFAULT_PROFILE},activities:[],wellness:[],plan:null,planOverrides:{},adjustLog:[],shoes:[],env:{temp:20,humidity:50,altitude:0},races:[]}; const saved=save(); route(); notifySaveResult(saved,'消去しました'); } };
   route();
 }
 document.addEventListener('DOMContentLoaded',boot);
