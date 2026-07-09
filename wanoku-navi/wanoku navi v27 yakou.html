@@ -1286,6 +1286,7 @@ const Store=(()=>{
     list.forEach(k=>blocked.delete(k));
     console.warn('[wanoku storage] user-authorized overwrite enabled',{keys:list});
   }
+  function isBlocked(k){return blocked.has(k);}
   function exportCorrupt(k){
     const r=corrupt.get(k);if(!r)return;
     try{
@@ -1297,8 +1298,25 @@ const Store=(()=>{
       showStoreWarning(`${k} の破損データを書き出せませんでした。ページを閉じる前に開発者コンソールを確認してください。`,k);
     }
   }
-  return{load,get,set,allowOverwrite,exportCorrupt,get mode(){return mode;},get volatile(){return mode==='mem';}};
+  return{load,get,set,allowOverwrite,isBlocked,exportCorrupt,get mode(){return mode;},get volatile(){return mode==='mem';}};
 })();
+function notifyStoreResult(saved,successMessage,keys){
+  const list=keys==null?[]:(Array.isArray(keys)?keys:[keys]);
+  if(list.some(k=>Store.isBlocked(k))){
+    toast('破損データ保護中のため保存を停止しています');
+    return false;
+  }
+  if(saved&&Store.mode==='local'){
+    toast(successMessage);
+    return true;
+  }
+  if(saved){
+    toast('保存処理を受け付けました');
+    return true;
+  }
+  toast('一時保存です。このセッション限りの保存です');
+  return false;
+}
 
 /* ---- 潮汐エンジン (検証済) ---- */
 const TIDE_C={Sa:[0,0,1,0,0,0,8.18,168.09,'none'],Ssa:[0,0,2,0,0,0,0.40,269.00,'none'],Mm:[0,1,0,-1,0,0,0.84,98.65,'Mm'],MSf:[0,2,-2,0,0,0,0.45,338.22,'none'],Mf:[0,2,0,0,0,0,0.72,120.63,'Mf'],'2Q1':[1,-4,1,2,0,90,0.56,134.79,'O1'],sig1:[1,-4,3,0,0,90,0.66,146.29,'O1'],Q1:[1,-3,1,1,0,90,3.94,150.81,'O1'],rho1:[1,-3,3,-1,0,90,0.77,148.06,'O1'],O1:[1,-2,1,0,0,90,19.21,159.85,'O1'],M1:[1,-1,1,1,0,90,0.93,169.62,'none'],P1:[1,0,-1,0,0,90,8.04,176.24,'none'],S1:[1,0,0,0,0,0,0.77,60.68,'none'],K1:[1,0,1,0,0,-90,24.49,178.37,'K1'],J1:[1,1,1,-1,0,-90,1.37,188.83,'O1'],OO1:[1,2,1,0,0,-90,0.79,218.87,'O1'],'2N2':[2,-4,2,2,0,0,0.85,157.88,'M2'],mu2:[2,-4,4,0,0,0,1.26,165.14,'M2'],N2:[2,-3,2,1,0,0,6.70,148.56,'M2'],nu2:[2,-3,4,-1,0,0,1.33,146.49,'M2'],M2:[2,-2,2,0,0,0,44.02,152.41,'M2'],L2:[2,-1,2,-1,0,180,1.53,160.89,'M2'],T2:[2,0,-1,0,1,0,1.14,156.68,'none'],S2:[2,0,0,0,0,0,21.71,180.49,'none'],K2:[2,0,2,0,0,0,5.89,177.00,'K2'],M3:[3,-3,3,0,0,0,0.96,150.88,'M3'],M4:[4,-4,4,0,0,0,0.64,177.67,'M4'],MS4:[4,-2,2,0,0,0,0.22,258.32,'M2']};
@@ -2125,8 +2143,8 @@ function saveObservation(spotId,flags,memo=''){
   S.observations=S.observations||[];
   const o={id:'obs_'+Date.now(),spotId,spotName:sp.name,ms:nowJST(),target:S.target,flags:{...flags},memo:String(memo||'').trim()};
   S.observations.unshift(o);S.observations=S.observations.slice(0,250);
-  Store.set('observations',S.observations);
-  clrSC();renderForecast();renderRouteCoach();renderLogs();toast('現地観察を反映しました');
+  const saved=Store.set('observations',S.observations);
+  clrSC();renderForecast();renderRouteCoach();renderLogs();notifyStoreResult(saved,'現地観察を反映しました','observations');
 }
 function observationQuickHTML(spot,ms){
   const obs=recentObsForSpot(spot,nowJST(),S.target,8),imp=observationImpact(spot,ms,S.target);
@@ -2161,8 +2179,8 @@ function saveFieldDecision(action,spotId,nextSpotId='',reason=''){
   S.fieldDecisions=S.fieldDecisions||[];
   S.fieldDecisions.unshift({id:'fd_'+Date.now(),ms:nowJST(),date:S.selDate,spotId,spotName:sp.name,nextSpotId,target:S.target,action,label,reason});
   S.fieldDecisions=S.fieldDecisions.slice(0,120);
-  Store.set('fieldDecisions',S.fieldDecisions);
-  toast(label+'を保存しました');
+  const saved=Store.set('fieldDecisions',S.fieldDecisions);
+  notifyStoreResult(saved,label+'を保存しました','fieldDecisions');
   renderLogs();
 }
 function fieldDecision(row,rows,rng,gate){
@@ -2327,8 +2345,8 @@ function mergeOfficialSignals(items){
     S.officialSignals.unshift({...it,id});seen.add(id);added++;
   }
   S.officialSignals=S.officialSignals.sort((a,b)=>(b.ms||0)-(a.ms||0)).slice(0,300);
-  Store.set('officialSignals',S.officialSignals);
-  return {added,updated};
+  const saved=Store.set('officialSignals',S.officialSignals);
+  return {added,updated,saved};
 }
 async function refreshOfficialData(){
   const btn=$('[data-official-fetch]');if(btn){btn.disabled=true;btn.innerHTML='<span class="spinner"></span> 取得中';}
@@ -2338,9 +2356,9 @@ async function refreshOfficialData(){
     S.officialFetchHistory=S.officialFetchHistory||[];
     S.officialFetchHistory.unshift({id:'of_'+Date.now(),ms:Date.now(),src:'JMA',added:m.added,updated:m.updated,errs:res.errs});
     S.officialFetchHistory=S.officialFetchHistory.slice(0,30);
-    Store.set('officialFetchHistory',S.officialFetchHistory);
+    const historySaved=Store.set('officialFetchHistory',S.officialFetchHistory);
     clrSC();renderForecast();renderOfficialHub();renderLogs();
-    toast(`公式情報 ${m.added}件追加 / ${m.updated}件更新`);
+    notifyStoreResult(m.saved&&historySaved,`公式情報 ${m.added}件追加 / ${m.updated}件更新`,['officialSignals','officialFetchHistory']);
   }catch(e){toast('公式情報の取得に失敗: '+String(e.message||e).slice(0,80));}
   finally{if(btn){btn.disabled=false;btn.textContent='気象庁から自動取得';}}
 }
@@ -2370,7 +2388,7 @@ function officialImportSheet(){
     const recs=parseOfficialText($('#offTxt').value,$('#offSrc').value);
     if(!recs.length){toast('本文を入力してください');return;}
     $('#offPreview').innerHTML=`<div class="off-list">${recs.map(r=>`<div class="off-row ${officialTone(r)}"><div class="off-row-title">${esc(r.src)} · ${esc((S.spots.find(s=>s.id===r.spotId)?.name)||r.zone||'広域')}</div><div class="off-row-meta">${fmtLDate(r.ms)} · ${esc(r.note.slice(0,120))}</div><div class="off-tags">${(r.tags||[]).map(t=>`<span class="off-tag ${['blue_tide','red_tide','strong_wind','wave','access'].includes(t)?'bad':''}">${esc(t)}</span>`).join('')}</div></div>`).join('')}</div><button class="btn pri full" id="offSave" style="margin-top:9px">${recs.length}件を保存</button>`;
-    $('#offSave').onclick=()=>{const m=mergeOfficialSignals(recs);closeSheet();clrSC();renderForecast();renderOfficialHub();renderLogs();toast(`公式情報 ${m.added}件を保存`);};
+    $('#offSave').onclick=()=>{const m=mergeOfficialSignals(recs);closeSheet();clrSC();renderForecast();renderOfficialHub();renderLogs();notifyStoreResult(m.saved,`公式情報 ${m.added}件を保存`,'officialSignals');};
   };
 }
 function renderOfficialHub(){
@@ -2854,8 +2872,8 @@ function renderQuickWindow(){
   }).join('')+`<div class="qw-summary"><b>推奨運用:</b> ${esc(top.sp.name)}を本命に、${retreat}<br><span class="muted">根拠: ${src.map(esc).join(' / ')||'季節・地形セオリー中心'}</span></div>`;
 }
 function setQuickWindow(start,end){
-  S.settings.window={...(S.settings.window||WIN0),start,end};Store.set('settings',S.settings);
-  qwinDefaults();clrSC();renderQuickWindow();renderRouteCoach();renderCockpit();toast('短時間釣行枠を更新しました');
+  S.settings.window={...(S.settings.window||WIN0),start,end};const saved=Store.set('settings',S.settings);
+  qwinDefaults();clrSC();renderQuickWindow();renderRouteCoach();renderCockpit();notifyStoreResult(saved,'短時間釣行枠を更新しました','settings');
 }
 function presetQuickWindow(kind){
   const dayMs=selMs(0),sun=sunAt(dayMs);
@@ -4152,15 +4170,15 @@ function applyTuningPlan(){
   S.tuningHistory.unshift({id:'tune_'+Date.now(),ms:Date.now(),checked:p.checked,from:{...S.settings.weights},to:{...p.next},items:p.items.map(x=>({key:x.key,delta:x.delta,reason:x.reason}))});
   S.tuningHistory=S.tuningHistory.slice(0,50);
   S.settings.weights={...p.next};
-  Store.set('settings',S.settings);Store.set('tuningHistory',S.tuningHistory);
-  clrSC();learnFromLogs();renderForecast();renderValidation();if(S._view==='settings')renderSettings();toast('提案重みを適用しました');
+  const settingsSaved=Store.set('settings',S.settings),historySaved=Store.set('tuningHistory',S.tuningHistory);
+  clrSC();learnFromLogs();renderForecast();renderValidation();if(S._view==='settings')renderSettings();return notifyStoreResult(settingsSaved&&historySaved,'提案重みを適用しました',['settings','tuningHistory']);
 }
 function resetTuningWeights(){
   S.tuningHistory=S.tuningHistory||[];
   S.tuningHistory.unshift({id:'reset_'+Date.now(),ms:Date.now(),checked:validationStats().checked.length,from:{...S.settings.weights},to:{...W0},items:[{key:'all',delta:0,reason:'標準重みに戻す'}]});
   S.tuningHistory=S.tuningHistory.slice(0,50);
-  S.settings.weights={...W0};Store.set('settings',S.settings);Store.set('tuningHistory',S.tuningHistory);
-  clrSC();renderForecast();renderValidation();if(S._view==='settings')renderSettings();toast('標準重みに戻しました');
+  S.settings.weights={...W0};const settingsSaved=Store.set('settings',S.settings),historySaved=Store.set('tuningHistory',S.tuningHistory);
+  clrSC();renderForecast();renderValidation();if(S._view==='settings')renderSettings();notifyStoreResult(settingsSaved&&historySaved,'標準重みに戻しました',['settings','tuningHistory']);
 }
 
 function renderDiagnostics(st){
@@ -4350,7 +4368,7 @@ function saveNoFishingNote(){
   const sm=noFishingSummary();
   S.noFishingNotes=S.noFishingNotes||[];
   S.noFishingNotes.unshift({id:'nf_'+Date.now(),ms:Date.now(),date:ymd(nowJST()),target:S.target,value:sm.value,officialFresh:sm.official.fresh.length,signalFresh:sm.sig.fresh.length,watch:sm.watch.slice(0,3).map(x=>x.zone),gaps:sm.gaps.map(x=>x.zone),weekend:sm.wkRows.slice(0,3).map(r=>({spotId:r.sp.id,spotName:r.sp.name,score:r.bw.total}))});
-  S.noFishingNotes=S.noFishingNotes.slice(0,60);Store.set('noFishingNotes',S.noFishingNotes);renderNoFishingHub();toast('非釣行チェックを保存しました');
+  S.noFishingNotes=S.noFishingNotes.slice(0,60);const saved=Store.set('noFishingNotes',S.noFishingNotes);renderNoFishingHub();notifyStoreResult(saved,'非釣行チェックを保存しました','noFishingNotes');
 }
 function noFishingCockpitHTML(top,rows,rng){
   const sm=noFishingSummary();
@@ -4844,7 +4862,7 @@ function saveReviewReport(date){
   const r=reviewCoach(date);S.reviewReports=S.reviewReports||[];
   const report={id:'rev_'+Date.now(),ms:Date.now(),date:r.ctx.date,verdict:r.verdict,summary:r.summary,worked:r.worked,weak:r.weak,next:r.next};
   S.reviewReports=S.reviewReports.filter(x=>x.date!==report.date);S.reviewReports.unshift(report);S.reviewReports=S.reviewReports.slice(0,80);
-  Store.set('reviewReports',S.reviewReports);renderLogs();if(S._logSeg==='validation')renderValidation();toast('レビューを保存しました');
+  const saved=Store.set('reviewReports',S.reviewReports);renderLogs();if(S._logSeg==='validation')renderValidation();notifyStoreResult(saved,'レビューを保存しました','reviewReports');
 }
 
 
@@ -4909,7 +4927,7 @@ function saveNextTripPlan(rows,rng){
   const p=nextTripPlan(rows,rng);if(!p){toast('保存できるプランがありません');return;}
   S.tripPlans=S.tripPlans||[];const obj=tripPlanStoreObject(p);
   S.tripPlans=S.tripPlans.filter(x=>!(x.date===obj.date&&x.target===obj.target&&x.window?.start===obj.window?.start&&x.window?.end===obj.window?.end));
-  S.tripPlans.unshift(obj);S.tripPlans=S.tripPlans.slice(0,80);Store.set('tripPlans',S.tripPlans);renderLogs();toast('次回釣行プランを保存しました');
+  S.tripPlans.unshift(obj);S.tripPlans=S.tripPlans.slice(0,80);const saved=Store.set('tripPlans',S.tripPlans);renderLogs();notifyStoreResult(saved,'次回釣行プランを保存しました','tripPlans');
 }
 function renderNextTripPlanner(rows,rng){
   const p=nextTripPlan(rows,rng);if(!p)return '';
@@ -5040,11 +5058,11 @@ function spotSheet(sp){const isN=!sp;sp=sp||{id:'',name:'',lat:home().lat,lng:ho
     <div class="row wrap">${isN?'':'<button class="btn danger" id="spd">削除</button>'}<button class="btn ghost" id="spc">キャンセル</button><button class="btn pri grow" id="sps">保存</button></div>`);
   let tgts=[...(sp.targets||[])];
   $('#sptc').onclick=e=>{const b=e.target.closest('[data-tt]');if(!b)return;const t=b.dataset.tt;tgts.includes(t)?tgts=tgts.filter(x=>x!==t):tgts.push(t);b.classList.toggle('on');};
-  $('#spc').onclick=closeSheet;if(!isN)$('#spd').onclick=()=>{S.spots=S.spots.filter(s=>s.id!==sp.id);Store.set('spots',S.spots);closeSheet();renderAll();toast('削除しました');};
+  $('#spc').onclick=closeSheet;if(!isN)$('#spd').onclick=()=>{S.spots=S.spots.filter(s=>s.id!==sp.id);const saved=Store.set('spots',S.spots);closeSheet();renderAll();notifyStoreResult(saved,'削除しました','spots');};
   $('#sps').onclick=()=>{const nm=$('#spn').value.trim();if(!nm){toast('名前を入力してください');return;}
     const obj={id:sp.id||'u'+Date.now(),name:nm,lat:parseFloat($('#spla').value)||home().lat,lng:parseFloat($('#splo').value)||home().lng,facing:parseInt($('#spf').value)||180,light:$('#spli').value==='1',inner:true,zone:$('#spz').value,targets:tgts,structure:$('#spst').value.split(',').map(x=>x.trim()).filter(Boolean),note:$('#spnt').value.trim()};
     if(sp.id)S.spots=S.spots.map(s=>s.id===sp.id?obj:s);else S.spots.push(obj);
-    Store.set('spots',S.spots);closeSheet();renderAll();toast('保存しました');};}
+    const saved=Store.set('spots',S.spots);closeSheet();renderAll();notifyStoreResult(saved,'保存しました','spots');};}
 
 
 function importCatchSheet(){
@@ -5062,8 +5080,8 @@ function importCatchSheet(){
       const existing=new Set(S.userCatches.map(r=>`${r.date}_${r.spotId}_${r.sp}_${r.size_cm||''}_${r.count||''}_${r.lure||''}`));
       let added=0;
       recs.forEach(rec=>{const key=`${rec.date}_${rec.spotId}_${rec.sp}_${rec.size_cm||''}_${rec.count||''}_${rec.lure||''}`;if(existing.has(key))return;rec.src=rec.src||'手動取込';rec.conf=rec.conf||0.85;S.userCatches.push(rec);existing.add(key);added++;});
-      Store.set('userCatches',S.userCatches);
-      clrSC();closeSheet();renderForecast();renderIntel();renderLogs();toast(`${added}件を取り込みました`);
+      const saved=Store.set('userCatches',S.userCatches);
+      clrSC();closeSheet();renderForecast();renderIntel();renderLogs();notifyStoreResult(saved,`${added}件を取り込みました`,'userCatches');
     };
   };
 }
@@ -5087,7 +5105,7 @@ $('#lf').onclick=e=>{const b=e.target.closest('[data-lf]');if(!b)return;fl[b.dat
   $('#lx').onclick=closeSheet;
   $('#ls').onclick=()=>{const dm=$('#ld').value.match(/(\d+)-(\d+)-(\d+)/),tm=$('#lt').value.match(/(\d+):(\d+)/);const ms=jstWall(+dm[1],+dm[2],+dm[3],+tm[1],+tm[2]);
     S.logs.push({id:'l'+Date.now(),spotId:$('#lsp').value,ms,target:tgt,quality:q,pin,...fl,memo:$('#lm').value.trim(),snap:{month:partsOf(ms).mo,tideType:tideType(ms),height:tideHeight(ms),temp:aiSSTAt(ms).v}});
-    Store.set('logs',S.logs);learnFromLogs();closeSheet();renderLogs();clrSC();renderForecast();toast('記録しました');};}
+    const saved=Store.set('logs',S.logs);learnFromLogs();closeSheet();renderLogs();clrSC();renderForecast();notifyStoreResult(saved,'記録しました','logs');};}
 
 /* ---- タブ / イベント ---- */
 function switchView(v){$$('.view').forEach(x=>x.classList.remove('on'));$('#v-'+v)?.classList.add('on');$$('.tab').forEach(t=>t.classList.toggle('on',t.dataset.v===v));
@@ -5120,7 +5138,7 @@ document.addEventListener('click',e=>{
   const oi=e.target.closest('[data-official-import]');
   if(oi){officialImportSheet();return;}
   const oc=e.target.closest('[data-official-clear]');
-  if(oc){S.officialSignals=(S.officialSignals||[]).filter(x=>Date.now()-(x.ms||0)<14*86400000);Store.set('officialSignals',S.officialSignals);clrSC();renderOfficialHub();renderForecast();toast('古い公式情報を整理しました');return;}
+  if(oc){S.officialSignals=(S.officialSignals||[]).filter(x=>Date.now()-(x.ms||0)<14*86400000);const saved=Store.set('officialSignals',S.officialSignals);clrSC();renderOfficialHub();renderForecast();notifyStoreResult(saved,'古い公式情報を整理しました','officialSignals');return;}
   const nfo=e.target.closest('[data-nf-official]');
   if(nfo){refreshOfficialData();return;}
   const nfi=e.target.closest('[data-nf-import]');
@@ -5137,11 +5155,11 @@ $('#prev').onclick=()=>shiftDay(-1);$('#next').onclick=()=>shiftDay(1);
 function shiftDay(n){const m=S.selDate.match(/(\d+)-(\d+)-(\d+)/);S.selDate=ymd(jstWall(+m[1],+m[2],+m[3],12)+n*86400000);clrSC();renderDate();renderForecast();}
 $('#datein').onchange=e=>{if(e.target.value){S.selDate=e.target.value;clrSC();renderDate();renderForecast();}};
 
-$('#qwApply')?.addEventListener('click',()=>{S.settings.window={start:$('#qws')?.value||WIN0.start,end:$('#qwe')?.value||WIN0.end};Store.set('settings',S.settings);clrSC();renderQuickWindow();renderRouteCoach();renderCockpit();toast('再計算しました');});
+$('#qwApply')?.addEventListener('click',()=>{S.settings.window={start:$('#qws')?.value||WIN0.start,end:$('#qwe')?.value||WIN0.end};const saved=Store.set('settings',S.settings);clrSC();renderQuickWindow();renderRouteCoach();renderCockpit();notifyStoreResult(saved,'再計算しました','settings');});
 ['qws','qwe'].forEach(id=>{$('#'+id)?.addEventListener('change',()=>{S.settings.window={start:$('#qws')?.value||WIN0.start,end:$('#qwe')?.value||WIN0.end};Store.set('settings',S.settings);clrSC();renderQuickWindow();renderRouteCoach();renderCockpit();});});
 $$('[data-qwp]').forEach(b=>b.addEventListener('click',()=>presetQuickWindow(b.dataset.qwp)));
 
-$('#cond')?.parentElement?.addEventListener('click',e=>{const b=e.target.closest('[data-pres]');if(!b)return;S.settings.pressure=b.dataset.pres;Store.set('settings',S.settings);[...b.parentElement.children].forEach(x=>x.classList.toggle('on',x===b));clrSC();renderForecast();toast('気圧傾向を反映しました');});
+$('#cond')?.parentElement?.addEventListener('click',e=>{const b=e.target.closest('[data-pres]');if(!b)return;S.settings.pressure=b.dataset.pres;const saved=Store.set('settings',S.settings);[...b.parentElement.children].forEach(x=>x.classList.toggle('on',x===b));clrSC();renderForecast();notifyStoreResult(saved,'気圧傾向を反映しました','settings');});
 document.addEventListener('click',e=>{const j=e.target.closest('[data-jump]');if(j){const sp=S.spots.find(s=>s.id===j.dataset.jump);if(sp)showSpotDetail(sp);}});
 document.addEventListener('click',e=>{const p=e.target.closest('[data-fpin]');if(p){const sp=S.spots.find(s=>s.id===p.dataset.fpin);if(sp)showSpotDetail(sp);}});
 document.addEventListener('click',e=>{
@@ -5157,15 +5175,15 @@ $('#tsel').onclick=e=>{const b=e.target.closest('[data-sp]');if(!b)return;S.targ
 $('#srank').onclick=e=>{const b=e.target.closest('[data-sid]');if(b){const sp=S.spots.find(s=>s.id===b.dataset.sid);if(sp)showSpotDetail(sp);}};
 $('#splist').onclick=e=>{const b=e.target.closest('[data-esp]');if(b){const sp=S.spots.find(s=>s.id===b.dataset.esp);if(sp)spotSheet(sp);}};
 $('#lseg').onclick=e=>{const b=e.target.closest('[data-ls]');if(!b)return;S._logSeg=b.dataset.ls;$$('#lseg button').forEach(x=>x.classList.toggle('on',x===b));$('#lpane').style.display=S._logSeg==='logs'?'':'none';$('#spane').style.display=S._logSeg==='signals'?'':'none';$('#opane').style.display=S._logSeg==='official'?'':'none';$('#nfpane').style.display=S._logSeg==='nofish'?'':'none';$('#vpane').style.display=S._logSeg==='validation'?'':'none';renderLogs();};
-$('#llist').onclick=e=>{const b=e.target.closest('[data-dll]');if(b){S.logs=S.logs.filter(l=>l.id!==b.dataset.dll);Store.set('logs',S.logs);learnFromLogs();renderLogs();toast('削除しました');}};
+$('#llist').onclick=e=>{const b=e.target.closest('[data-dll]');if(b){S.logs=S.logs.filter(l=>l.id!==b.dataset.dll);const saved=Store.set('logs',S.logs);learnFromLogs();renderLogs();notifyStoreResult(saved,'削除しました','logs');}};
 $('#vlist').onclick=e=>{const apply=e.target.closest('[data-apply-tune]'),reset=e.target.closest('[data-reset-tune]');if(apply){applyTuningPlan();}else if(reset){resetTuningWeights();}};
 $('#heatmap').onclick=e=>{const b=e.target.closest('[data-hsp]');if(b){S.target=b.dataset.hsp;switchView('forecast');renderForecast();toast(S.target+'で予測');}};
 document.addEventListener('click',e=>{const b=e.target.closest('[data-ml]');if(!b)return;setMapLayer(b.dataset.ml);b.parentElement.querySelectorAll('.zchip').forEach(x=>x.classList.toggle('on',x===b));});
 $('#zfilter').onclick=e=>{const b=e.target.closest('[data-z]');if(!b)return;S._zone=b.dataset.z;$$('#zfilter .zchip').forEach(x=>x.classList.toggle('on',x===b));renderSpots();};
 // 設定
 $('#wsliders').oninput=e=>{const r=e.target.closest('[data-wk]');if(!r)return;S.settings.weights[r.dataset.wk]=+r.value;$('#wv'+r.dataset.wk).textContent=r.value;Store.set('settings',S.settings);clrSC();renderForecast();};
-$('#wreset').onclick=()=>{S.settings.weights={...W0};Store.set('settings',S.settings);clrSC();renderSettings();renderForecast();toast('初期値に戻しました');};
-['shname','slat','slng','smode'].forEach(id=>{$(('#'+id)).onchange=()=>{S.settings.home={name:$('#shname').value,lat:parseFloat($('#slat').value)||HOME0.lat,lng:parseFloat($('#slng').value)||HOME0.lng};S.settings.mode=$('#smode').value;Store.set('settings',S.settings);clrSC();toast('設定を保存しました');};});
+$('#wreset').onclick=()=>{S.settings.weights={...W0};const saved=Store.set('settings',S.settings);clrSC();renderSettings();renderForecast();notifyStoreResult(saved,'初期値に戻しました','settings');};
+['shname','slat','slng','smode'].forEach(id=>{$(('#'+id)).onchange=()=>{S.settings.home={name:$('#shname').value,lat:parseFloat($('#slat').value)||HOME0.lat,lng:parseFloat($('#slng').value)||HOME0.lng};S.settings.mode=$('#smode').value;const saved=Store.set('settings',S.settings);clrSC();notifyStoreResult(saved,'設定を保存しました','settings');};});
 // 接続設定
 $('#connMode').onchange=e=>{const m=e.target.value;S.settings.conn={...(S.settings.conn||{}),mode:m};$('#connApikey').style.display=m==='apikey'?'':'none';$('#connProxy').style.display=m==='proxy'?'':'none';Store.set('settings',S.settings);};
 $('#apiKey').onchange=e=>{S.settings.conn={...(S.settings.conn||{}),apiKey:e.target.value.trim()};Store.set('settings',S.settings);};
@@ -5182,10 +5200,10 @@ $('#connTest').onclick=async()=>{
     st.innerHTML='<span style="color:var(--coral)">✗ 失敗: '+esc(String(e.message||e).slice(0,80))+'</span><br><span class="small muted" style="margin-top:4px;display:block">'+(esc(S._aiDebug||''))+'</span>';
   }finally{btn.disabled=false;btn.textContent='接続テスト';}
 };
-$('#gpsBtn').onclick=()=>{if(!navigator.geolocation){toast('位置情報が使えません');return;}navigator.geolocation.getCurrentPosition(p=>{S.settings.home={name:'現在地',lat:+p.coords.latitude.toFixed(4),lng:+p.coords.longitude.toFixed(4)};Store.set('settings',S.settings);renderSettings();toast('現在地を拠点にしました');clrSC();renderForecast();},()=>toast('位置を取得できませんでした'));};
+$('#gpsBtn').onclick=()=>{if(!navigator.geolocation){toast('位置情報が使えません');return;}navigator.geolocation.getCurrentPosition(p=>{S.settings.home={name:'現在地',lat:+p.coords.latitude.toFixed(4),lng:+p.coords.longitude.toFixed(4)};const saved=Store.set('settings',S.settings);renderSettings();notifyStoreResult(saved,'現在地を拠点にしました','settings');clrSC();renderForecast();},()=>toast('位置を取得できませんでした'));};
 $('#exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify({spots:S.spots.filter(s=>s.id.startsWith('u')),logs:S.logs.filter(l=>!l._ai),signals:S.signals||[],userCatches:S.userCatches||[],forecasts:S.forecasts||[],tuningHistory:S.tuningHistory||[],observations:S.observations||[],fieldDecisions:S.fieldDecisions||[],reviewReports:S.reviewReports||[],tripPlans:S.tripPlans||[],officialSignals:S.officialSignals||[],officialFetchHistory:S.officialFetchHistory||[],noFishingNotes:S.noFishingNotes||[],sourceRep:S.sourceRep||{},extIntel:S.extIntel||{runs:[]},settings:S.settings,v:27},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='wanoku-v27.json';a.click();toast('書き出しました');};
-$('#importBtn').onclick=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);Store.allowOverwrite();if(d.settings)S.settings={...S.settings,...d.settings,weights:{...W0,...d.settings.weights}};if(d.spots){for(const sp of d.spots)if(!S.spots.find(x=>x.id===sp.id))S.spots.push(sp);}if(d.logs){for(const l of d.logs)if(!S.logs.find(x=>x.id===l.id))S.logs.push(l);}if(d.signals){S.signals=S.signals||[];for(const l of d.signals)if(!S.signals.find(x=>x.id===l.id))S.signals.push(l);}if(d.userCatches){S.userCatches=S.userCatches||[];for(const c of d.userCatches)S.userCatches.push(c);}if(d.forecasts){S.forecasts=S.forecasts||[];for(const f of d.forecasts)if(!S.forecasts.find(x=>x.id===f.id))S.forecasts.push(f);}if(d.tuningHistory){S.tuningHistory=S.tuningHistory||[];for(const t of d.tuningHistory)if(!S.tuningHistory.find(x=>x.id===t.id))S.tuningHistory.push(t);}if(d.observations){S.observations=S.observations||[];for(const o of d.observations)if(!S.observations.find(x=>x.id===o.id))S.observations.push(o);}if(d.fieldDecisions){S.fieldDecisions=S.fieldDecisions||[];for(const fd of d.fieldDecisions)if(!S.fieldDecisions.find(x=>x.id===fd.id))S.fieldDecisions.push(fd);}if(d.reviewReports){S.reviewReports=S.reviewReports||[];for(const rr of d.reviewReports)if(!S.reviewReports.find(x=>x.id===rr.id))S.reviewReports.push(rr);}if(d.tripPlans){S.tripPlans=S.tripPlans||[];for(const tp of d.tripPlans)if(!S.tripPlans.find(x=>x.id===tp.id))S.tripPlans.push(tp);}if(d.officialSignals){S.officialSignals=S.officialSignals||[];for(const os of d.officialSignals)if(!S.officialSignals.find(x=>x.id===os.id))S.officialSignals.push(os);}if(d.officialFetchHistory){S.officialFetchHistory=S.officialFetchHistory||[];for(const oh of d.officialFetchHistory)if(!S.officialFetchHistory.find(x=>x.id===oh.id))S.officialFetchHistory.push(oh);}if(d.noFishingNotes){S.noFishingNotes=S.noFishingNotes||[];for(const nf of d.noFishingNotes)if(!S.noFishingNotes.find(x=>x.id===nf.id))S.noFishingNotes.push(nf);}if(d.sourceRep)S.sourceRep={...(S.sourceRep||{}),...d.sourceRep};if(d.extIntel)S.extIntel=d.extIntel;Store.set('settings',S.settings);Store.set('spots',S.spots);Store.set('logs',S.logs);Store.set('signals',S.signals||[]);Store.set('userCatches',S.userCatches||[]);Store.set('forecasts',S.forecasts||[]);Store.set('tuningHistory',S.tuningHistory||[]);Store.set('observations',S.observations||[]);Store.set('fieldDecisions',S.fieldDecisions||[]);Store.set('reviewReports',S.reviewReports||[]);Store.set('tripPlans',S.tripPlans||[]);Store.set('officialSignals',S.officialSignals||[]);Store.set('officialFetchHistory',S.officialFetchHistory||[]);Store.set('noFishingNotes',S.noFishingNotes||[]);Store.set('sourceRep',S.sourceRep||{});Store.set('extIntel',S.extIntel||{runs:[]});renderAll();toast('読み込みました');}catch{toast('読み込めませんでした');}};r.readAsText(f);};inp.click();};
-$('#wipeBtn').onclick=()=>{if(!confirm('ユーザーデータを消去します。よろしいですか?'))return;Store.allowOverwrite();S.spots=ALL_SPOTS.map(s=>({...s}));S.logs=[];S.signals=[];S.userCatches=[];S.forecasts=[];S.tuningHistory=[];S.observations=[];S.fieldDecisions=[];S.reviewReports=[];S.tripPlans=[];S.officialSignals=[];S.officialFetchHistory=[];S.noFishingNotes=[];S.ai=null;S.settings={home:{...HOME0},mode:'bike',weights:{...W0},conn:{mode:'sandbox'},window:{...WIN0}};Store.set('spots',S.spots);Store.set('logs',S.logs);Store.set('signals',S.signals);Store.set('userCatches',S.userCatches);Store.set('forecasts',S.forecasts);Store.set('tuningHistory',S.tuningHistory);Store.set('observations',S.observations);Store.set('fieldDecisions',S.fieldDecisions);Store.set('reviewReports',S.reviewReports);Store.set('tripPlans',S.tripPlans);Store.set('officialSignals',S.officialSignals);Store.set('officialFetchHistory',S.officialFetchHistory);Store.set('noFishingNotes',S.noFishingNotes);Store.set('ai',null);Store.set('settings',S.settings);renderAll();toast('消去しました');};
+$('#importBtn').onclick=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);Store.allowOverwrite();if(d.settings)S.settings={...S.settings,...d.settings,weights:{...W0,...d.settings.weights}};if(d.spots){for(const sp of d.spots)if(!S.spots.find(x=>x.id===sp.id))S.spots.push(sp);}if(d.logs){for(const l of d.logs)if(!S.logs.find(x=>x.id===l.id))S.logs.push(l);}if(d.signals){S.signals=S.signals||[];for(const l of d.signals)if(!S.signals.find(x=>x.id===l.id))S.signals.push(l);}if(d.userCatches){S.userCatches=S.userCatches||[];for(const c of d.userCatches)S.userCatches.push(c);}if(d.forecasts){S.forecasts=S.forecasts||[];for(const f of d.forecasts)if(!S.forecasts.find(x=>x.id===f.id))S.forecasts.push(f);}if(d.tuningHistory){S.tuningHistory=S.tuningHistory||[];for(const t of d.tuningHistory)if(!S.tuningHistory.find(x=>x.id===t.id))S.tuningHistory.push(t);}if(d.observations){S.observations=S.observations||[];for(const o of d.observations)if(!S.observations.find(x=>x.id===o.id))S.observations.push(o);}if(d.fieldDecisions){S.fieldDecisions=S.fieldDecisions||[];for(const fd of d.fieldDecisions)if(!S.fieldDecisions.find(x=>x.id===fd.id))S.fieldDecisions.push(fd);}if(d.reviewReports){S.reviewReports=S.reviewReports||[];for(const rr of d.reviewReports)if(!S.reviewReports.find(x=>x.id===rr.id))S.reviewReports.push(rr);}if(d.tripPlans){S.tripPlans=S.tripPlans||[];for(const tp of d.tripPlans)if(!S.tripPlans.find(x=>x.id===tp.id))S.tripPlans.push(tp);}if(d.officialSignals){S.officialSignals=S.officialSignals||[];for(const os of d.officialSignals)if(!S.officialSignals.find(x=>x.id===os.id))S.officialSignals.push(os);}if(d.officialFetchHistory){S.officialFetchHistory=S.officialFetchHistory||[];for(const oh of d.officialFetchHistory)if(!S.officialFetchHistory.find(x=>x.id===oh.id))S.officialFetchHistory.push(oh);}if(d.noFishingNotes){S.noFishingNotes=S.noFishingNotes||[];for(const nf of d.noFishingNotes)if(!S.noFishingNotes.find(x=>x.id===nf.id))S.noFishingNotes.push(nf);}if(d.sourceRep)S.sourceRep={...(S.sourceRep||{}),...d.sourceRep};if(d.extIntel)S.extIntel=d.extIntel;const keys=['settings','spots','logs','signals','userCatches','forecasts','tuningHistory','observations','fieldDecisions','reviewReports','tripPlans','officialSignals','officialFetchHistory','noFishingNotes','sourceRep','extIntel'];const results=[Store.set('settings',S.settings),Store.set('spots',S.spots),Store.set('logs',S.logs),Store.set('signals',S.signals||[]),Store.set('userCatches',S.userCatches||[]),Store.set('forecasts',S.forecasts||[]),Store.set('tuningHistory',S.tuningHistory||[]),Store.set('observations',S.observations||[]),Store.set('fieldDecisions',S.fieldDecisions||[]),Store.set('reviewReports',S.reviewReports||[]),Store.set('tripPlans',S.tripPlans||[]),Store.set('officialSignals',S.officialSignals||[]),Store.set('officialFetchHistory',S.officialFetchHistory||[]),Store.set('noFishingNotes',S.noFishingNotes||[]),Store.set('sourceRep',S.sourceRep||{}),Store.set('extIntel',S.extIntel||{runs:[]})];renderAll();notifyStoreResult(results.every(Boolean),'読み込みました',keys);}catch{toast('読み込めませんでした');}};r.readAsText(f);};inp.click();};
+$('#wipeBtn').onclick=()=>{if(!confirm('ユーザーデータを消去します。よろしいですか?'))return;Store.allowOverwrite();S.spots=ALL_SPOTS.map(s=>({...s}));S.logs=[];S.signals=[];S.userCatches=[];S.forecasts=[];S.tuningHistory=[];S.observations=[];S.fieldDecisions=[];S.reviewReports=[];S.tripPlans=[];S.officialSignals=[];S.officialFetchHistory=[];S.noFishingNotes=[];S.ai=null;S.settings={home:{...HOME0},mode:'bike',weights:{...W0},conn:{mode:'sandbox'},window:{...WIN0}};const results=[Store.set('spots',S.spots),Store.set('logs',S.logs),Store.set('signals',S.signals),Store.set('userCatches',S.userCatches),Store.set('forecasts',S.forecasts),Store.set('tuningHistory',S.tuningHistory),Store.set('observations',S.observations),Store.set('fieldDecisions',S.fieldDecisions),Store.set('reviewReports',S.reviewReports),Store.set('tripPlans',S.tripPlans),Store.set('officialSignals',S.officialSignals),Store.set('officialFetchHistory',S.officialFetchHistory),Store.set('noFishingNotes',S.noFishingNotes),Store.set('ai',null),Store.set('settings',S.settings)];renderAll();notifyStoreResult(results.every(Boolean),'消去しました',['spots','logs','signals','userCatches','forecasts','tuningHistory','observations','fieldDecisions','reviewReports','tripPlans','officialSignals','officialFetchHistory','noFishingNotes','ai','settings']);};
 // AI更新ボタン
 $('#aiRefresh').onclick=async()=>{
   const btn=$('#aiRefresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>';
@@ -5328,8 +5346,8 @@ async function fetchJMAWarnings(){
 }
 
 /* ---- 取込ルーティング(取得物 → 既存の型付きシグナルへ) ---- */
-function ingestExtCatches(arr,src){
-  if(!Array.isArray(arr)||!arr.length)return 0;
+function ingestExtCatches(arr,src,saveStatus){
+  if(!Array.isArray(arr)||!arr.length){if(saveStatus)saveStatus.saved=true;return 0;}
   S.signals=S.signals||[];
   const existing=new Set(S.signals.map(l=>l._key).filter(Boolean));
   let added=0;
@@ -5355,11 +5373,11 @@ function ingestExtCatches(arr,src){
     existing.add(key); added++;
   }
   S.signals=S.signals.slice(0,700);
-  Store.set('signals',S.signals);
+  const saved=Store.set('signals',S.signals);if(saveStatus)saveStatus.saved=saved;
   return added;
 }
-function ingestExtEnv(arr,src){
-  if(!Array.isArray(arr)||!arr.length)return 0;
+function ingestExtEnv(arr,src,saveStatus){
+  if(!Array.isArray(arr)||!arr.length){if(saveStatus)saveStatus.saved=true;return 0;}
   const items=arr.filter(x=>x&&(x.note||x.area)).map((x,i)=>{
     const ms=parseDate(x.date||'')||nowJST();
     const note=String(x.note||x.area||'');
@@ -5375,7 +5393,7 @@ function ingestExtEnv(arr,src){
       area:x.area||'', zone, spotId:guessSpot(x.area||note),
       ms, date:ymd(ms), target:null, tags, conf:(src.trust||0.9), quality:1, note, url:x.url||''};
   });
-  const m=mergeOfficialSignals(items);
+  const m=mergeOfficialSignals(items);if(saveStatus)saveStatus.saved=m.saved;
   return m.added;
 }
 
@@ -5489,7 +5507,6 @@ function maybeAutoTune(){
     if(totalAbs>10)return;                                         // 大提案は自動適用しない(手動確認へ)
     S.lastAutoTuneAt=now;Store.set('lastAutoTuneAt',now);
     applyTuningPlan();
-    if(typeof toast==='function')toast('自律チューニング: 重みを自動調整しました');
   }catch(e){console.log('autotune',e.message);}
 }
 
@@ -5514,7 +5531,7 @@ function extIngestSheet(){
       $('#eiPreview').innerHTML=`<div class="alert aqua"><span class="aico">🛰</span><span>${arr.length}件の釣果を解析(出所: ${esc(srcName)})</span></div>`+
         arr.map((c,i)=>`<div class="bulk-row"><div class="bulk-row-title">${i+1}. ${esc(c.area)} <span class="tag amb">${esc(c.species)}</span></div><div class="bulk-row-meta">${c.date} · ${c.size_cm?c.size_cm+'cm':''}${c.count?' ×'+c.count:''} · ${esc(c.method||'ルアー不明')}</div><div class="small muted">${esc(c.notes||'')}</div></div>`).join('')+
         `<button class="btn pri full" id="eiSave" style="margin-top:8px">${arr.length}件を保存(釣果シグナル)</button>`;
-      $('#eiSave').onclick=()=>{const n=ingestExtCatches(arr,{...src,srcName});try{learnSourceReliability();}catch(e){}closeSheet();clrSC();renderForecast();renderLogs();if(typeof renderOfficialHub==='function')renderOfficialHub();renderExtIntelPanel();toast(`${n}件を取り込みました`);};
+      $('#eiSave').onclick=()=>{const status={};const n=ingestExtCatches(arr,{...src,srcName},status);try{learnSourceReliability();}catch(e){}closeSheet();clrSC();renderForecast();renderLogs();if(typeof renderOfficialHub==='function')renderOfficialHub();renderExtIntelPanel();notifyStoreResult(status.saved,`${n}件を取り込みました`,'signals');};
     }else{
       const lines=txt.split(/\n\s*\n+/).map(x=>x.trim()).filter(Boolean);
       const src2=(lines.length>1?lines:txt.split(/\n+/).map(x=>x.trim()).filter(Boolean));
@@ -5523,7 +5540,7 @@ function extIngestSheet(){
       $('#eiPreview').innerHTML=`<div class="alert aqua"><span class="aico">🛰</span><span>${arr.length}件の環境情報を解析(出所: ${esc(srcName)})</span></div>`+
         preview.map(x=>`<div class="off-row ${x.tags.some(t=>['blue_tide','red_tide','strong_wind','wave','access'].includes(t))?'bad':x.tags.includes('bait')?'good':'warn'}"><div class="off-row-meta">${esc((x.note||'').slice(0,110))}</div><div class="off-tags">${x.tags.map(t=>`<span class="off-tag">${esc(t)}</span>`).join('')}</div></div>`).join('')+
         `<button class="btn pri full" id="eiSave" style="margin-top:8px">${arr.length}件を保存(環境シグナル)</button>`;
-      $('#eiSave').onclick=()=>{const n=ingestExtEnv(arr,{...src,srcName});closeSheet();clrSC();renderForecast();if(typeof renderOfficialHub==='function')renderOfficialHub();renderLogs();renderExtIntelPanel();toast(`${n}件を保存しました`);};
+      $('#eiSave').onclick=()=>{const status={};const n=ingestExtEnv(arr,{...src,srcName},status);closeSheet();clrSC();renderForecast();if(typeof renderOfficialHub==='function')renderOfficialHub();renderLogs();renderExtIntelPanel();notifyStoreResult(status.saved,`${n}件を保存しました`,'officialSignals');};
     }
   };
 }
@@ -5562,9 +5579,9 @@ function renderExtIntelPanel(){
   el.querySelectorAll('[data-ei-src]').forEach(c=>c.onchange=()=>{S.settings.extSources=S.settings.extSources||{};S.settings.extSources[c.dataset.eiSrc]=c.checked;Store.set('settings',S.settings);});
   const rf=$('#eiRelayFetch');if(rf)rf.onclick=async()=>{rf.disabled=true;rf.innerHTML='<span class="spinner"></span> 取得中';try{const r=await fetchRelayIntel();clrSC();renderForecast();if(typeof renderOfficialHub==='function')renderOfficialHub();renderLogs();renderExtIntelPanel();if(r){const bad=(r.sources||[]).filter(s=>!s.ok).length;toast(`リレー取得: 釣果${r.catch} / 環境${r.env}${bad?` · ${bad}フィード失敗`:''}`);}}catch(e){toast('リレー取得に失敗: '+String(e.message||e).slice(0,60));}finally{const b=$('#eiRelayFetch');if(b){b.disabled=false;b.textContent='今すぐ自動取得';}}};
   const fe=$('#eiFeeds');if(fe)fe.onclick=()=>feedsEditorSheet();
-  const ra=$('#eiRelayAuto');if(ra)ra.onchange=e=>{S.settings.relayAuto=e.target.checked;Store.set('settings',S.settings);toast(e.target.checked?'自動取得をON':'自動取得をOFF');if(e.target.checked)fetchRelayIntel({silent:true}).then(x=>{if(x){clrSC();renderForecast();renderExtIntelPanel();}}).catch(()=>{});};
+  const ra=$('#eiRelayAuto');if(ra)ra.onchange=e=>{S.settings.relayAuto=e.target.checked;const saved=Store.set('settings',S.settings);notifyStoreResult(saved,e.target.checked?'自動取得をON':'自動取得をOFF','settings');if(e.target.checked)fetchRelayIntel({silent:true}).then(x=>{if(x){clrSC();renderForecast();renderExtIntelPanel();}}).catch(()=>{});};
   const rs2=$('#eiRelaySearch');if(rs2)rs2.onchange=e=>{S.settings.relaySearch=e.target.checked;Store.set('settings',S.settings);};
-  const au=$('#eiAuto');if(au)au.onchange=e=>{S.settings.autoTune=e.target.checked;Store.set('settings',S.settings);toast(e.target.checked?'自律チューニングをON':'自律チューニングをOFF');if(e.target.checked){try{maybeAutoTune();}catch(err){}}};
+  const au=$('#eiAuto');if(au)au.onchange=e=>{S.settings.autoTune=e.target.checked;const saved=Store.set('settings',S.settings);notifyStoreResult(saved,e.target.checked?'自律チューニングをON':'自律チューニングをOFF','settings');if(e.target.checked){try{maybeAutoTune();}catch(err){}}};
 }
 
 
@@ -5639,7 +5656,7 @@ function feedsEditorSheet(){
       <button class="btn pri full" id="fdAdd">追加</button>
     </div>`);
   const rerender=()=>{const fl=$('#feedList');if(fl)fl.innerHTML=(S.settings.feeds||[]).map(row).join('')||'<div class="small muted">未登録です。下から追加してください。</div>';};
-  $('#fdAdd').onclick=()=>{const url=($('#fdUrl').value||'').trim();if(!/^https?:\/\//.test(url)){toast('http(s):// から始まるURLを入力してください');return;}S.settings.feeds=S.settings.feeds||[];S.settings.feeds.push({url,label:($('#fdLabel').value||'').trim()||url,cat:$('#fdCat').value});Store.set('settings',S.settings);$('#fdUrl').value='';$('#fdLabel').value='';rerender();try{renderExtIntelPanel();}catch(e){}toast('フィードを追加しました');};
+  $('#fdAdd').onclick=()=>{const url=($('#fdUrl').value||'').trim();if(!/^https?:\/\//.test(url)){toast('http(s):// から始まるURLを入力してください');return;}S.settings.feeds=S.settings.feeds||[];S.settings.feeds.push({url,label:($('#fdLabel').value||'').trim()||url,cat:$('#fdCat').value});const saved=Store.set('settings',S.settings);$('#fdUrl').value='';$('#fdLabel').value='';rerender();try{renderExtIntelPanel();}catch(e){}notifyStoreResult(saved,'フィードを追加しました','settings');};
   $('#feedList').onclick=e=>{const d=e.target.closest('[data-feed-del]');if(!d)return;const i=+d.dataset.feedDel;(S.settings.feeds||[]).splice(i,1);Store.set('settings',S.settings);rerender();try{renderExtIntelPanel();}catch(e){}};
 }
 
