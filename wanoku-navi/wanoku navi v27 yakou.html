@@ -2495,7 +2495,6 @@ function spotTideFit(spot,ms,tgt){
   if(h>hi)warn=`潮位${Math.round(h)}cmで足場/流れが重い可能性`;
   return{score,h,flow,profile:pr,reason,warn};
 }
-function angleDiff(a,b){return Math.abs(((a-b+540)%360)-180);}
 function windFacingFit(spot,wx,tgt){
   if(!wx)return{score:0.8,reason:''};
   const v=wx.wind||0,from=wx.wdir??180,face=spot.facing??180;

@@ -1,103 +1,111 @@
-# 釣果情報の自動取得 — セットアップ手順
+# 釣果情報の自動取得 — 現行構成とセットアップ前提
 
-`file://` のアプリからはSNS/船宿/ブログ/YouTubeを直接取得できません(ブラウザのCORS制約)。
-そこで **Cloudflare Worker** を「中継役」に立て、サーバ側で取得してアプリへCORS付きで返します。
+## 現在のファイル構成
 
-構成:
-- `wanoku-relay.worker.js` … Cloudflare Worker(中継役)
-- `wanoku_navi_v25_auto_intel.html` … リレー連携を組み込んだアプリ(Edgeで開く)
+このディレクトリにある実行対象は次のHTMLです。
 
----
+- `wanoku navi v27 yakou.html`
 
-## 1. Worker をデプロイ(初回のみ・約10分)
+旧資料に記載されていた `wanoku_navi_v25_auto_intel.html` は存在しません。コード内の「v25 Relay」という表記は、リレー機能が追加された世代を示すコメントであり、現在使うHTMLのファイル名ではありません。
 
-前提: Node.js が入っていること。
+また、次のファイルも現在のリポジトリには含まれていません。
 
-```bash
-npm i -g wrangler          # Cloudflare CLI
-wrangler login             # ブラウザでCloudflareにログイン
-```
+- `wanoku-relay.worker.js`
+- `wrangler.toml`
+- `src/index.js`
 
-作業フォルダを作り、ファイルを配置:
+そのため、このリポジトリだけではCloudflare Workerを新規デプロイできません。以下は、別途入手・管理している互換Workerを接続する場合の前提と手順です。この文書はWorker本体を提供するものではありません。
 
-```
+## なぜWorkerが必要か
+
+`file://` で開いたアプリからSNS、船宿、ブログ、YouTubeなどを直接取得すると、ブラウザのCORS制約で失敗することがあります。wanoku-naviは、サーバー側で取得してCORS付きで返す中継先としてCloudflare Worker等を利用できます。
+
+現在のv27 HTMLは、設定したベースURLに対して次のエンドポイントを呼び出します。
+
+| エンドポイント | 用途 |
+|---|---|
+| `POST /intel` | RSS等から釣果・環境情報を取得 |
+| `POST /v1/messages` | 接続テストおよびAnthropic互換のAI呼び出し |
+
+プロキシURLにはベースURL、例えば `https://wanoku-relay.<account>.workers.dev` を入力します。`/intel` と `/v1/messages` はアプリ側が用途に応じて付加するため、入力欄には付けません。
+
+## 互換Workerに必要な前提
+
+接続するWorkerは、少なくとも次を満たす必要があります。
+
+- `POST /intel` を受け付ける。
+- `/intel` のリクエスト本文 `{ feeds, target, area, useSearch }` を処理できる。
+- `/intel` がJSONを返す。v27は主に `items`、`searchCatches`、`searchEnv`、`sources` を参照する。
+- AI接続も使う場合は、`POST /v1/messages` がAnthropic Messages API互換の応答を返す。
+- アプリを開くオリジンに対して必要なCORSヘッダーを返す。
+- APIキーをブラウザへ返さず、Worker側のsecretとして保持する。
+
+`file://` からのリクエストは通常のHTTPSサイトとオリジンの扱いが異なります。Worker側の許可オリジン設計と、実際に使うiPhone SafariまたはブラウザでのCORS確認が必要です。
+
+## Workerを別途用意済みの場合の配置例
+
+Workerコードを別途入手済みの場合は、一般的に次のような独立した作業フォルダで管理します。ファイル名はWorker側プロジェクトの設定に従ってください。
+
+```text
 wanoku-relay/
 ├─ wrangler.toml
 └─ src/
-   └─ index.js   ← wanoku-relay.worker.js をこの名前で置く
+   └─ index.js
 ```
 
-`wrangler.toml`(最小):
+`wrangler.toml` の `main` は、実在するWorkerソースを指定します。
 
 ```toml
 name = "wanoku-relay"
 main = "src/index.js"
-compatibility_date = "2024-11-01"
+compatibility_date = "YYYY-MM-DD"
 ```
 
-(任意)SNSのAI検索を使う場合だけ、APIキーをsecretに登録:
+デプロイには、そのWorkerプロジェクトが指定するNode.js、Wrangler、環境変数、secret設定を使用してください。旧資料の `ANTHROPIC_API_KEY` というsecret名は、Worker本体が存在しないため、このリポジトリでは正しい名前か検証できません。
 
-```bash
-wrangler secret put ANTHROPIC_API_KEY
-# プロンプトに sk-ant-... を貼り付け
-```
+## v27アプリ側の設定
 
-デプロイ:
+1. `wanoku navi v27 yakou.html` を使用するブラウザで開く。
+2. 設定タブの「オンライン接続」で、接続モードを「プロキシ経由」にする。
+3. プロキシURLへWorkerのベースURLを入力する。
+4. 「接続テスト」を実行する。
+5. 「External Intelligence」の「フィードを管理」でRSS URLと出所名を登録する。
+6. 「今すぐ自動取得」を実行し、取得件数またはエラー表示を確認する。
+7. 必要な場合だけ「起動時＋定期の自動取得」をONにする。現在の実装では起動時と約3時間ごとに `/intel` を呼び出す。
 
-```bash
-wrangler deploy
-# → https://wanoku-relay.<あなた>.workers.dev が表示される
-```
+登録例:
 
-動作確認(ブラウザで開く):
-- `https://wanoku-relay.<あなた>.workers.dev/` → `{"ok":true,...}` が返ればOK
-- `.../intel?feeds=https://www.youtube.com/feeds/videos.xml?channel_id=UCxxxx&target=シーバス` → items が返る
+- YouTube: `https://www.youtube.com/feeds/videos.xml?channel_id=チャンネルID`
+- WordPress: ブログURLの `/feed`
+- その他: 配信元が公開しているRSS URL
 
----
-
-## 2. アプリ側の設定(Edge)
-
-1. `wanoku_navi_v25_auto_intel.html` を Edge で開く。
-2. 設定タブ → 「オンライン接続」→ 接続モードを **プロキシ経由** にし、
-   `https://wanoku-relay.<あなた>.workers.dev` を貼り付け(末尾 `/v1/messages` は自動付加)。
-3. 設定タブ → **External Intelligence** カード →「フィードを管理」で
-   船宿/ブログ/YouTubeのRSSを登録(出所名を付けると信頼度学習の単位になります)。
-   - YouTube: `https://www.youtube.com/feeds/videos.xml?channel_id=チャンネルID`
-   - Ameba/WordPress: ブログURL + `/rss` または `/feed`
-4. 「今すぐ自動取得」で取得 → 予測に反映。
-   「起動時＋定期の自動取得」をONにすると、開くたび＋約3時間ごとに自動で取得します。
-5. (任意)WorkerにAPIキーを設定済みなら「SNSはAI検索も併用」をONで、X/fimo等もLLM＋検索で拾います。
-
----
+「SNSはAI検索も併用」は、接続先Workerが検索付きAI呼び出しを実装し、必要なAPIキーをWorker側で安全に設定している場合だけ利用できます。
 
 ## 動作の流れ
 
-```
-アプリ(Edge, file://)
-   │  POST /intel  { feeds:[…], target, useSearch }
+```text
+wanoku navi v27 yakou.html
+   │ POST /intel
    ▼
-Cloudflare Worker（実オリジン＝CORS制約なし）
-   ├─ 各RSSをサーバ側fetch → 釣果/環境の候補を抽出
-   ├─（任意）Anthropic API を web_search 付きで実行（SNS/広域）
-   ▼  JSON + CORS許可ヘッダ
-アプリ
-   ├─ 釣果 → 出所付きシグナル → スコアへ反映
-   ├─ 環境 → 青潮/濁り/波浪等のタグ → スコアへ反映
-   └─ 実釣ログ・他ソースと突合 → 各ソースの信頼度を自律学習
+互換Worker
+   ├─ RSS等をサーバー側で取得
+   ├─ 必要に応じて検索・AI処理
+   └─ JSONとCORSヘッダーを返す
+   ▼
+wanoku-navi
+   ├─ 釣果を出所付きシグナルへ反映
+   ├─ 環境情報を公式・環境シグナルへ反映
+   └─ 実釣ログ等と照合してソース信頼度を学習
 ```
 
-- Worker は `/v1/messages` も中継するため、アプリ既存のAI呼び出し(Web検索含む)も
-  このWorker経由で有効になります。
-- 費用: Cloudflare Workers 無料枠(1日10万リクエスト)で十分。AI検索を使う分だけAnthropic APIの従量課金。
+気象庁の天気・警報取得には、アプリから直接取得する経路もあり、リレーWorkerとは別です。
 
-## 自動化できる範囲(正直な整理)
+## 接続確認
 
-| ソース | 自動取得 | 方法 |
-|---|---|---|
-| 船宿・個人ブログ | ◎ | RSS(Ameba/WordPress) |
-| YouTubeチャンネル | ◎ | チャンネルRSS |
-| 気象庁(天気/警報) | ◎ | アプリが直接fetch(Worker不要) |
-| 水質/河川/施設(RSS有) | ○ | RSS |
-| X / Instagram / fimo | △ | 公開APIなし。Worker側のLLM＋検索で拾う(取りこぼしあり) |
+1. ブラウザの開発者ツールまたはSafariのWebインスペクタを開く。
+2. 「接続テスト」で `/v1/messages` のHTTPステータスとCORSエラーを確認する。
+3. 「今すぐ自動取得」で `/intel` が呼ばれることを確認する。
+4. 応答がHTTP 200のJSONであることを確認する。
+5. 取得後に釣果・環境件数が表示され、再読み込み後も設定と取得結果が残ることを確認する。
 
-SNS本体の完全自動は仕様上むずかしく、RSS系＋AI検索の併用が現実解です。
+失敗時は、Worker URL、エンドポイント、CORS、Workerログ、secret名、レスポンスJSONの形を確認してください。Worker本体がこのリポジトリにないため、サーバー側の障害や仕様差はwanoku-naviだけでは修正できません。
