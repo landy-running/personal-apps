@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>RunOS 2.1 Season Intelligence — Running Intelligence</title>
+<title>RunOS 100 — APEX · Running Intelligence</title>
 <style>
 /* ============================================================
    MERIDIAN — design tokens
@@ -638,7 +638,7 @@ button.tiny:active{background:var(--teal);color:#08110e}
         <ellipse cx="20" cy="20" rx="10" ry="5.5" stroke="#8C7DFF" stroke-width="1.6" opacity=".7"/>
         <circle cx="20" cy="9" r="3" fill="#F5B23E"/>
       </svg>
-      <div><h1>MERIDIAN</h1><small>RUNOS 2.6 · FOUNDATION</small></div>
+      <div><h1>MERIDIAN</h1><small>RUNOS 100 · APEX</small></div>
     </div>
     <nav class="nav" id="nav"></nav>
     <div class="foot">
@@ -1519,10 +1519,13 @@ function renderToday(){
       return `<div class="card" style="margin-bottom:16px;padding:13px 16px;border-left:3px solid var(--teal)">
         <div class="eyebrow" style="color:var(--teal);margin-bottom:5px">COACH NOTE · 今日のひとこと</div>
         <div style="font-size:13.5px;line-height:1.85;color:var(--ink)">${note}</div></div>`; })()}
+    ${raceCountdownCard()}
     <div class="statusline">
       <span class="pill gb" data-gb="status" style="background:${st.color}1c;color:${st.color};border:1px solid ${st.color}55">ステータス: ${st.label}</span>
       ${(()=>{const pw=currentPlanWeek(); if(!pw) return ''; const pc=pw.phaseCol||'var(--teal)';
         return `<span class="pill gb" data-gb="phaseguide" style="background:${pc}1c;color:${pc};border:1px solid ${pc}55">${pw.phase} · 第${pw.n}週</span>`;})()}
+      ${(()=>{try{const s=injurySentinel(); if(s.score<35) return '';
+        return `<span class="pill gb" data-gb="sentinel" style="background:${s.lv.col}1c;color:${s.lv.col};border:1px solid ${s.lv.col}55">⚠ 前兆 ${s.score}</span>`;}catch(e){return ''}})()}
       ${recBadge?`<span class="gb" data-gb="te" style="display:contents">${recBadge}</span>`:''}
       ${raceBadge}
       ${weatherChip()}
@@ -1887,7 +1890,7 @@ function renderPlan(){
   el('view-plan').innerHTML=`
     ${weekAheadCard()}
     ${goalBlock}
-    ${DB.plan?phaseGuideCard()+raceReadinessCard()+complianceCard():''}
+    ${DB.plan?racePlanCard()+phaseGuideCard()+raceReadinessCard()+complianceCard():''}
     ${prBlock}
     <div class="card" style="margin-bottom:16px">
       <h3>Race Projections</h3>
@@ -2135,6 +2138,7 @@ function renderInsights(){
 
   el('view-insights').innerHTML=`
     ${dataHealthCard()}
+    ${sentinelCard()}
     ${reviewCard}
     ${reconcileCard()}
     ${(()=>{ const risk=loadRiskV77();
@@ -2703,6 +2707,18 @@ const GB={
       means:'高度な分析はデータ次第。「次の一手」に従うだけで、アプリ全体が段階的に賢くなります。',
       formula:'総合 = 各項目(✓=1/△=0.5/○=0)の平均 × 100',
       inputs:dh.items.map(i=>[i.k, i.val+(i.ok?' ✓':'')]).concat([['総合',dh.score+'/100']])}; },
+  raceplan:()=>{ const rp=racePlan(); if(!rp) return {label:'RACE',title:'Race Day Engine',lede:'シーズン（目標レース）を設定すると本番の設計図を生成します。',formula:''};
+    return {label:'RACE DAY', title:'Race Day Engine · 本番の設計図',
+      lede:'採用走力とMarathon Shapeによる予測（またはあなたの目標タイム）を基準に、距離別の生理学的に最適な配分（序盤+2%抑え→ネガティブスプリット）へ分解します。終盤の上げ幅はW′残量で安全性を検証し、補給は体重×時間から分単位のタイムラインに、環境は等価タイムとして提示します。',
+      means:'当日に考えることを最少にする「設計図」。腕時計に貼る配分表・ジェルの本数・スタート前の心得までこの一枚で完結します。',
+      formula:'区間ペース = 基準ペース ×(1+区間係数)× 正規化\n序盤+約2% / 中盤±0 / 終盤 −1〜1.5%',
+      inputs:[['基準', rp.basis+' '+hms(rp.raceSec)],['予測レンジ', rp.predSec?hms(rp.predLo)+'–'+hms(rp.predHi):'—'],['区間数', rp.segs.length],['補給回数', Math.max(0,rp.fuelRows.length-1)+'回'],['残り', rp.daysLeft+'日']]}; },
+  sentinel:()=>{ const s=injurySentinel();
+    return {label:'SENTINEL', title:'Injury Sentinel · 故障前兆の複合警報',
+      lede:'故障は単一指標では予兆を掴めません。脚部の急増(ACWR)・負荷の単調性・HRR60の急落（自律神経疲労）・あなた自身の「脚の張り」申告という独立した4系統を融合し、重なりを点数化します。',
+      means:'どれか1つなら様子見、2つ重なれば黄信号、3つで赤——という臨床的な直感を、毎日自動で実行する見張り番です。',
+      formula:'スコア = Σ(シグナル別重み)\n脚部ACWR>1.3:+28 / HRR −8bpm:+24 / 張り申告×2:+22 / 単調性>2:+16 …',
+      inputs:[['スコア', s.score+'/100 · '+s.lv.label],['検出シグナル', s.sig.length?s.sig.map(x=>x.t).join(' / '):'なし'],['HRR変化', s.hrrDrop!=null?(s.hrrDrop>=0?'−':'+')+round(Math.abs(s.hrrDrop),0)+'bpm':'—']]}; },
 };
 /* ============================================================
    RUNOS v78 — HYBRID INTELLIGENCE LAYER
@@ -4561,8 +4577,10 @@ function personalResponse(){
     return {...d, r:s.r, effect, n:s.n, conf};
   }).filter(Boolean).sort((a,b)=>b.effect-a.effect);
   if(!items.length) return null;
+  try{ const ind=ridgeResponse(rows,['qual','long','total','easy']);
+    if(ind) items.forEach(i=>{ i.indep=ind[i.key]!=null? ind[i.key]*i.scale : null; }); }catch(e){}
   const top=items.find(i=>i.conf!=='低'&&i.effect>0)||items[0];
-  return {items, top, n:rows.length};
+  return {items, top, n:rows.length, ridge:items.some(i=>i.indep!=null)};
 }
 
 function personalResponseCard(){
@@ -4575,12 +4593,12 @@ function personalResponseCard(){
     return `<div style="margin:10px 0">
       <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px">
         <span>${i.label} <span class="hint">${i.unit}あたり</span></span>
-        <span class="mono" style="color:${col};font-weight:600">${i.effect>=0?'+':''}${round(i.effect,2)} <span class="hint">eVO2max/2週 · ${i.conf}</span></span></div>
+        <span class="mono" style="color:${col};font-weight:600">${i.effect>=0?'+':''}${round(i.effect,2)}${i.indep!=null?` <span class="hint">/ 独立 ${i.indep>=0?'+':''}${round(i.indep,2)}</span>`:''} <span class="hint">· ${i.conf}</span></span></div>
       <div class="track" style="height:6px;border-radius:4px;background:var(--line);overflow:hidden">
         <i style="display:block;height:100%;width:${pct}%;background:${col};border-radius:4px"></i></div></div>`; }).join('');
   return `<div class="card gb" data-gb="response">
     <h3>Personal Response · あなたに効く刺激 <span class="hint" style="font-weight:400">· ${pr.n}週から学習</span></h3>
-    <div class="hint" style="margin-bottom:8px">一般論ではなく、あなた自身の過去データから「刺激→2週後の走力変化」を回帰した個人応答モデル。処方の優先順位に反映されます。</div>
+    <div class="hint" style="margin-bottom:8px">あなた自身のデータから「刺激→2週後の走力変化」を回帰した個人応答モデル。${pr.ridge?'「独立」はリッジ回帰で他刺激の影響を除いた純粋な効果です。':''}処方の優先順位に反映されます。</div>
     ${rows}
     ${pr.top&&pr.top.effect>0?`<div class="callout" style="border-left-color:var(--teal);margin-top:12px"><div class="b">あなたの実績では <strong>${pr.top.label}</strong> が最も走力に効いています（${pr.top.unit}で +${round(pr.top.effect,2)}）。今の律速と合わせて処方に織り込みます。</div></div>`:''}
   </div>`;
@@ -4717,6 +4735,182 @@ function dataHealthCard(){
     ${rows}
     ${dh.next?`<div class="callout" style="border-left-color:${col};margin-top:12px"><div class="eyebrow" style="color:${col};margin-bottom:3px">精度を最も上げる次の一手</div><div class="b">${dh.next.k}: ${dh.next.fix}</div></div>`:''}
   </div>`;
+}
+
+/* ============================================================
+   ██  RUNOS v100 — APEX  ██
+   The milestone release. Every engine built across 100 versions
+   converges into race-day execution and deeper self-learning:
+   · RACE DAY ENGINE — adopted fitness × marathon shape × env ×
+     W' budget × fueling → a complete, printable pacing dossier,
+     plus a 14-day countdown coach on Today.
+   · INJURY SENTINEL — composite early-warning: mechanical ACWR ×
+     monotony × HRR60 collapse × subjective soreness, fused into
+     one named-signal alarm.
+   · INDEPENDENT RESPONSE — ridge regression separates confounded
+     stimuli, upgrading the personal response model from
+     correlation to independent effect.
+   ============================================================ */
+
+/* ---------- A) RACE DAY ENGINE ---------- */
+function racePlan(){
+  const p=DB.plan; if(!p||!p.race||!p.race.date) return null;
+  const daysLeft=dayDiff(todayISO(),p.race.date); if(daysLeft<0) return null;
+  const preds=(typeof racePredictICU==='function')?racePredictICU():null;
+  const pr=preds?preds.find(r=>Math.abs(r.m-p.race.m)<1):null;
+  const goalSec=p.race.goal?parseHMS(p.race.goal):null;
+  const basisSec=goalSec||(pr?pr.blend:null); if(!basisSec) return null;
+  const raceSec=Math.round(basisSec);
+  const distKm=p.race.m/1000;
+  const basePace=raceSec/distKm;
+  const prof = p.race.m>=42000? [[5,2.2],[10,0.8],[20,0],[30,0],[35,-0.3],[distKm,-1.0]]
+    : p.race.m>=21000? [[5,1.8],[10,0.3],[15,0],[18,-0.5],[distKm,-1.2]]
+    : p.race.m>=9500?  [[3,1.5],[7,0],[distKm,-1.2]]
+    : [[2,1.2],[4,0],[distKm,-1.5]];
+  let segs=[]; let prev=0;
+  prof.forEach(pt=>{ const to=Math.min(pt[0],distKm); const km=to-prev;
+    if(km>0.05){ segs.push({from:prev,to,km,off:pt[1]}); prev=to; } });
+  let t0=segs.reduce((s,g)=>s+g.km*basePace*(1+g.off/100),0);
+  const k=raceSec/t0; let cum=0;
+  segs=segs.map(g=>{ const pace=basePace*(1+g.off/100)*k; const segSec=g.km*pace; cum+=segSec;
+    return {...g,pace,segSec,cumSec:cum}; });
+  // W' budget check on the closing segment
+  let wNote=null;
+  try{ const cs=criticalSpeed();
+    if(cs&&cs.dprime>=80){ const last=segs[segs.length-1]; const v=1000/last.pace;
+      if(v>cs.cs){ const use=(v-cs.cs)*last.segSec;
+        wNote=`終盤ペースはCS超え——W′を約${round(use,0)}m相当（残量${round(100-use/cs.dprime*100,0)}%）使う設計です。上げ幅はここが安全圏の上限。`; }
+      else wNote='全区間がCS以下。W′は温存され、ラストスパートの自由度が残ります。'; } }catch(e){}
+  // fueling timeline
+  const fp=fuelingPlan(distKm, distKm>=15?'long':'race');
+  const totalMin=raceSec/60; const fuelRows=[];
+  if(fp&&fp.need){ let tm=20; while(tm<totalMin-12){ fuelRows.push({min:Math.round(tm),act:'ジェル1個（糖質20–25g）＋ひと口の水'}); tm+=25; }
+    fuelRows.push({min:'—',act:`水分は給水所ごとに分割、合計 ~${fp.ml}ml 目安（暑熱時は増量）`}); }
+  const e=envAdjust();
+  const envLine=e.factor>=0.02?`現在の環境設定（${e.temp}℃/${e.humidity}%）だと実質 +${round(e.factor*100,1)}%。当日この条件なら ${hms(Math.round(raceSec*(1+e.factor)))} 相当が等価努力です。`:null;
+  return {daysLeft,label:p.race.label,name:p.race.name,distKm,goalSec,
+    predSec:pr?Math.round(pr.blend):null,predLo:pr?Math.round(pr.lo):null,predHi:pr?Math.round(pr.hi):null,
+    basis:goalSec?'目標タイム':'現在の予測',raceSec,basePace,segs,wNote,fuelRows,envLine};
+}
+function racePlanCard(){
+  const rp=racePlan(); if(!rp) return '';
+  const segRows=rp.segs.map(g=>`<tr>
+    <td class="mono">${round(g.from,1)}–${round(g.to,1)}km</td>
+    <td class="n mono" style="color:var(--gold)">${paceStr(g.pace)}/km</td>
+    <td class="n mono">${hms(Math.round(g.segSec))}</td>
+    <td class="n mono">${hms(Math.round(g.cumSec))}</td></tr>`).join('');
+  const fuelRows=rp.fuelRows.map(f=>`<tr><td class="mono">${typeof f.min==='number'?f.min+'分':f.min}</td><td>${f.act}</td></tr>`).join('');
+  return `<div class="card gb" data-gb="raceplan" style="margin-bottom:16px;background:linear-gradient(135deg,#131a2e,#0c1019);border-color:var(--gold)">
+    <div class="eyebrow" style="color:var(--gold)">RACE DAY ENGINE · 本番の設計図</div>
+    <h3 style="margin:4px 0 2px">${rp.name||rp.label} <span class="hint" style="font-weight:400">· ${rp.daysLeft}日前</span></h3>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:baseline;margin:8px 0 4px">
+      <div><div class="eyebrow" style="color:var(--ink-3)">設計基準（${rp.basis}）</div>
+        <div class="mono" style="font-size:26px;font-weight:700;color:var(--gold)">${hms(rp.raceSec)}</div></div>
+      ${rp.predSec?`<div><div class="eyebrow" style="color:var(--ink-3)">現在の予測レンジ</div>
+        <div class="mono" style="font-size:15px;color:var(--ink-2)">${hms(rp.predLo)} – ${hms(rp.predHi)}<br><span class="hint">中央 ${hms(rp.predSec)}</span></div></div>`:''}
+    </div>
+    ${rp.goalSec&&rp.predSec?(rp.goalSec<=rp.predLo?`<div class="hint" style="color:var(--coral)">目標は予測レンジより速め——序盤の抑えを厳守し、環境次第でBプラン（+90秒）も想定を。</div>`
+      : rp.goalSec>=rp.predHi?`<div class="hint" style="color:var(--teal)">目標は予測レンジ内〜保守的。後半の上げ幅に余裕があります。</div>`
+      : `<div class="hint">目標は予測レンジ内。この配分で十分に狙えます。</div>`):''}
+    <h3 style="margin-top:14px;font-size:14px">区間配分 <span class="hint" style="font-weight:400">· 序盤+2%抑え→ネガティブスプリット</span></h3>
+    <div class="tscroll"><table><thead><tr><th>区間</th><th class="n">目標ペース</th><th class="n">区間</th><th class="n">通過</th></tr></thead><tbody>${segRows}</tbody></table></div>
+    ${rp.wNote?`<div class="hint" style="margin-top:8px;color:var(--ink-2)">⚡ ${rp.wNote}</div>`:''}
+    ${rp.envLine?`<div class="hint" style="margin-top:6px;color:var(--gold)">☀ ${rp.envLine}</div>`:''}
+    ${rp.fuelRows.length?`<h3 style="margin-top:14px;font-size:14px">補給タイムライン</h3>
+      <div class="tscroll"><table><thead><tr><th>経過</th><th>行動</th></tr></thead><tbody>${fuelRows}</tbody></table></div>`:''}
+    <div class="hint" style="margin-top:10px">走力・Shape・環境・W′・体重ベース補給——RunOSの全エンジンからの合成です。各値の根拠はタップで開示。</div>
+  </div>`;
+}
+function raceCountdownCard(){
+  const rp=racePlan(); if(!rp||rp.daysLeft>14) return '';
+  const d=rp.daysLeft;
+  const theme = d===0? {t:'レース当日',b:'3時間前に軽い糖質（餅/バナナ）。アップは10–15分＋流し2本。最初の5kmは「遅すぎる」と感じる位が正解——配分表どおりに。',c:'var(--coral)'}
+    : d===1? {t:'前日',b:'カーボ主体の食事・水分をこまめに。20分ジョグ＋流し2本まで。準備物（シューズ・ジェル'+ (rp.fuelRows.length?`×${Math.max(1,rp.fuelRows.length-1)}個`:'') +'・ゼッケン・ワセリン）を今夜のうちに。',c:'var(--coral)'}
+    : d<=2? {t:'あと'+d+'日',b:'完全休養 or 20分ジョグ。もう体力は増えません——抜くのが仕事。',c:'var(--gold)'}
+    : d<=7? {t:'あと'+d+'日 · 最終週',b:'量は普段の半分以下、刺激は短く（2分×3–4）。レースペースの感覚合わせを1回だけ。新しい靴・補給の実験は禁止。',c:'var(--gold)'}
+    : {t:'あと'+d+'日 · テーパー',b:'量を25–40%削減、強度と頻度は維持。睡眠を最優先に。不安からの走り込みが最大の敵です。',c:'var(--teal)'};
+  return `<div class="card gb" data-gb="raceplan" style="margin-bottom:16px;border-left:3px solid ${theme.c}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <div><div class="eyebrow" style="color:${theme.c}">RACE COUNTDOWN · ${rp.name||rp.label}</div>
+        <h3 style="margin:3px 0 0">${theme.t}</h3></div>
+      <span class="mono" style="font-size:30px;font-weight:700;color:${theme.c}">${d}<small style="font-size:11px;color:var(--ink-3)"> days</small></span></div>
+    <div style="font-size:13.5px;line-height:1.75;color:var(--ink-2);margin-top:8px">${theme.b}</div>
+    <a href="#plan" class="btn ghost" style="display:inline-flex;margin-top:10px;text-decoration:none">配分プランを見る →</a></div>`;
+}
+
+/* ---------- B) INJURY SENTINEL ---------- */
+function injurySentinel(){
+  let risk=null, ms=null;
+  try{ risk=loadRiskV77(); }catch(e){}
+  try{ ms=monotonyStrain(); }catch(e){}
+  let hrrDrop=null;
+  try{ const hr=hrrTrend(8);
+    if(hr.length>=4){ const last3=hr.slice(-3).map(p=>p.drop);
+      const prior=hr.slice(0,-3).map(p=>p.drop);
+      const med=a=>{const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)];};
+      hrrDrop=med(prior)-(last3.reduce((s,x)=>s+x,0)/last3.length); } }catch(e){}
+  const cut=(()=>{const d=new Date(todayISO()+'T00:00');d.setDate(d.getDate()-3);return isoLocal(d);})();
+  const soreHits=DB.wellness.filter(w=>w.date>=cut&&w.soreness!=null&&w.soreness>=4).length;
+  const sig=[]; let score=0;
+  if(risk){
+    if(risk.mechanicalACWR>1.3){score+=28;sig.push({t:`脚部ACWR ${risk.mechanicalACWR.toFixed(2)}（機械的負荷の急増）`,w:'high'});}
+    else if(risk.mechanicalACWR>1.15){score+=12;sig.push({t:`脚部ACWR ${risk.mechanicalACWR.toFixed(2)} やや高め`,w:'mid'});}
+    if(risk.cardioACWR>1.45){score+=10;sig.push({t:'心肺負荷の急増',w:'mid'});}
+  }
+  if(ms&&isFinite(ms.monotony)&&ms.monotony>2){score+=16;sig.push({t:`単調性 ${ms.monotony.toFixed(1)}（似た負荷の反復——強弱を付けて）`,w:'mid'});}
+  if(hrrDrop!=null&&hrrDrop>=8){score+=24;sig.push({t:`HRR60が平時比 −${round(hrrDrop,0)}bpm（自律神経の疲労蓄積）`,w:'high'});}
+  if(soreHits>=2){score+=22;sig.push({t:'「脚の張り」申告が直近3日で複数回',w:'high'});}
+  else if(soreHits===1){score+=8;sig.push({t:'脚の張りの申告あり',w:'mid'});}
+  score=clamp(score,0,100);
+  const lv= score>=60? {label:'警戒',col:'var(--coral)',adv:'今週の質練習を1回抜き、48–72時間の回復ブロックを。局所的な痛みなら早めに専門家へ。'}
+    : score>=35? {label:'注意',col:'var(--gold)',adv:'増量は今週見送り。イージーを本当に楽に走り、睡眠を+30分。3日後に再評価します。'}
+    : {label:'平常',col:'var(--teal)',adv:'前兆の重なりはありません。計画どおりで問題なし。'};
+  return {score,sig,lv,hrrDrop};
+}
+function sentinelCard(){
+  const s=injurySentinel();
+  const rows=s.sig.length? s.sig.map(x=>`<div style="display:flex;gap:8px;align-items:baseline;padding:5px 0;font-size:12.5px;color:var(--ink-2)">
+      <span style="color:${x.w==='high'?'var(--coral)':'var(--gold)'}">●</span><span>${x.t}</span></div>`).join('')
+    : `<div class="hint">検出中のシグナルはありません。</div>`;
+  return `<div class="card gb" data-gb="sentinel" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+      <h3 style="margin:0">Injury Sentinel · 故障前兆の複合警報</h3>
+      <span class="mono" style="font-size:24px;font-weight:700;color:${s.lv.col}">${s.score}<small style="font-size:11px;color:var(--ink-3)">/100 · ${s.lv.label}</small></span></div>
+    <div class="hint" style="margin:6px 0 8px">単独では見逃す前兆も、重なれば危険信号。負荷急増×単調性×HRR急落×主観申告を融合して監視します。</div>
+    <div class="track" style="height:7px;border-radius:4px;background:var(--line);overflow:hidden;margin-bottom:10px"><i style="display:block;height:100%;width:${s.score}%;background:${s.lv.col};border-radius:4px"></i></div>
+    ${rows}
+    <div class="callout" style="border-left-color:${s.lv.col};margin-top:10px"><div class="b">${s.lv.adv}</div></div>
+  </div>`;
+}
+
+/* ---------- C) INDEPENDENT RESPONSE (ridge) ---------- */
+function inv4(M){ // Gauss-Jordan for n<=4
+  const n=M.length; const A=M.map((r,i)=>[...r, ...Array.from({length:n},(_,j)=>i===j?1:0)]);
+  for(let c=0;c<n;c++){ let piv=c;
+    for(let r2=c+1;r2<n;r2++) if(Math.abs(A[r2][c])>Math.abs(A[piv][c])) piv=r2;
+    if(Math.abs(A[piv][c])<1e-9) return null;
+    [A[c],A[piv]]=[A[piv],A[c]];
+    const d=A[c][c]; for(let j=0;j<2*n;j++) A[c][j]/=d;
+    for(let r2=0;r2<n;r2++){ if(r2===c) continue; const f=A[r2][c];
+      for(let j=0;j<2*n;j++) A[r2][j]-=f*A[c][j]; } }
+  return A.map(r=>r.slice(n));
+}
+function ridgeResponse(rows,keys){
+  const nR=rows.length, nF=keys.length;
+  const mx=keys.map(k=>rows.reduce((s,r)=>s+r[k],0)/nR);
+  const sx=keys.map((k,i)=>Math.sqrt(rows.reduce((s,r)=>s+(r[k]-mx[i])**2,0)/nR)||1);
+  const my=rows.reduce((s,r)=>s+r.dv,0)/nR;
+  const sy=Math.sqrt(rows.reduce((s,r)=>s+(r.dv-my)**2,0)/nR)||1;
+  const X=rows.map(r=>keys.map((k,i)=>(r[k]-mx[i])/sx[i]));
+  const y=rows.map(r=>(r.dv-my)/sy);
+  const XtX=Array.from({length:nF},(_,i)=>Array.from({length:nF},(_,j)=>
+    X.reduce((s,row)=>s+row[i]*row[j],0)));
+  const lam=0.8; for(let i=0;i<nF;i++) XtX[i][i]+=lam;
+  const inv=inv4(XtX); if(!inv) return null;
+  const Xty=keys.map((_,i)=>X.reduce((s,row,r2)=>s+row[i]*y[r2],0));
+  const beta=inv.map(row=>row.reduce((s,v,j)=>s+v*Xty[j],0));
+  const out={}; keys.forEach((k,i)=>out[k]=beta[i]*sy/sx[i]); // raw units: ΔeVO2max per unit
+  return out;
 }
 
 function openGB(key){ const b=GB[key]&&GB[key](); if(!b) return;
