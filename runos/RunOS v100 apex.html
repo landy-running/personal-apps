@@ -605,7 +605,10 @@ tr.rec-on td{color:var(--ink)!important}
 .storage-warning{position:fixed;z-index:90;top:calc(10px + env(safe-area-inset-top));right:12px;width:min(390px,calc(100vw - 24px));padding:10px 38px 10px 12px;border:1px solid rgba(245,178,62,.55);border-radius:10px;background:rgba(37,29,18,.97);color:var(--ink);box-shadow:var(--shadow);font-size:12px;line-height:1.5}
 .storage-warning.error{border-color:rgba(255,105,97,.65);background:rgba(45,22,24,.97)}
 .storage-warning a{color:var(--teal);font-weight:600;margin-left:6px;white-space:nowrap}
-.storage-warning button{position:absolute;top:5px;right:7px;border:0;background:none;color:var(--ink-2);font-size:18px;line-height:1;cursor:pointer;padding:4px}
+.storage-warning>.storage-close{position:absolute;top:5px;right:7px;border:0;background:none;color:var(--ink-2);font-size:18px;line-height:1;cursor:pointer;padding:4px}
+.storage-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}
+.storage-actions .storage-action{border:1px solid var(--line);border-radius:7px;background:var(--surface-2);color:var(--ink);font-size:11px;line-height:1.2;padding:6px 9px;cursor:pointer}
+.storage-actions .storage-action.primary{border-color:var(--teal-dim);color:var(--teal)}
 /* ---- v96: refinements ---- */
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 .tscroll table{width:max-content;min-width:100%}
@@ -707,6 +710,7 @@ const DEFAULT_PROFILE = {
   injuryProne:false
 };
 let DB = { profile:{...DEFAULT_PROFILE}, activities:[], wellness:[], plan:null, planOverrides:{}, adjustLog:[], shoes:[], env:{temp:20,humidity:50,altitude:0}, races:[] };
+let STORAGE_RECOVERY = null;
 
 function approxJSONBytes(json){
   try{ return new Blob([json]).size; }
@@ -716,7 +720,7 @@ function storageSizeInfo(json){
   const bytes=approxJSONBytes(json);
   return {key:KEY,bytes,kib:Math.round(bytes/1024),mib:Math.round(bytes/104857.6)/10};
 }
-function showStorageWarning(message, level='warn', offerBackup=false){
+function showStorageWarning(message, level='warn', offerBackup=false, recoveryActions=false){
   const render=()=>{
     let box=document.getElementById('storageWarning');
     if(!box){
@@ -731,7 +735,16 @@ function showStorageWarning(message, level='warn', offerBackup=false){
     if(offerBackup){
       const link=document.createElement('a'); link.href='#settings'; link.textContent='設定を開く'; box.appendChild(link);
     }
+    if(recoveryActions){
+      const actions=document.createElement('div'); actions.className='storage-actions';
+      const backup=document.createElement('button'); backup.type='button'; backup.className='storage-action';
+      backup.textContent='破損データを書き出す'; backup.onclick=exportCorruptData; actions.appendChild(backup);
+      const restart=document.createElement('button'); restart.type='button'; restart.className='storage-action primary';
+      restart.textContent='デモデータで再開始'; restart.onclick=restartWithDemoData; actions.appendChild(restart);
+      box.appendChild(actions);
+    }
     const close=document.createElement('button'); close.type='button'; close.setAttribute('aria-label','閉じる');
+    close.className='storage-close';
     close.textContent='×'; close.onclick=()=>box.remove(); box.appendChild(close);
   };
   if(document.body) render();
@@ -743,30 +756,102 @@ function validateStoredDB(data){
   if(!Array.isArray(data.wellness)) throw new Error('wellness が配列ではありません');
   return data;
 }
+function archiveCorruptData(raw,cause){
+  const corruptKey=`${KEY}.corrupt.${Date.now()}`;
+  try{
+    localStorage.setItem(corruptKey,raw);
+    console.warn('[RunOS storage] corrupt data archived',{
+      sourceKey:KEY,corruptKey,...storageSizeInfo(raw),cause:String(cause&&cause.message||cause)
+    });
+    return corruptKey;
+  }catch(e){
+    console.error('[RunOS storage] corrupt data archive failed',e,{
+      sourceKey:KEY,corruptKey,cause:String(cause&&cause.message||cause)
+    });
+    return null;
+  }
+}
+function showCorruptRecoveryWarning(prefix=''){
+  const r=STORAGE_RECOVERY;
+  if(!r) return;
+  const message=r.corruptKey
+    ?`${prefix}破損データを退避しました（${r.corruptKey}）。現在はデモデータを一時表示しており、自動保存は停止しています。`
+    :`${prefix}破損データを検知しましたが、localStorageへの退避に失敗しました。現在はデモデータを一時表示しており、自動保存は停止しています。`;
+  showStorageWarning(message,'error',false,true);
+}
+function exportCorruptData(){
+  const r=STORAGE_RECOVERY;
+  if(!r) return;
+  try{
+    const raw=r.raw!=null?r.raw:(r.corruptKey?localStorage.getItem(r.corruptKey):null);
+    if(raw==null) throw new Error('退避した元文字列を取得できません');
+    const blob=new Blob([raw],{type:'text/plain;charset=utf-8'});
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url; a.download=`runos-corrupt-${r.detectedAt}.txt`; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    console.warn('[RunOS storage] corrupt data exported',{sourceKey:KEY,corruptKey:r.corruptKey,bytes:approxJSONBytes(raw)});
+  }catch(e){
+    console.error('[RunOS storage] corrupt data export failed',e,{sourceKey:KEY,corruptKey:r.corruptKey});
+    showCorruptRecoveryWarning('破損データの書き出しに失敗しました。');
+  }
+}
+function restartWithDemoData(){
+  const recovery=STORAGE_RECOVERY;
+  if(!recovery) return;
+  if(!confirm('退避した破損データを残したまま、現在のデモデータで meridian.v1 を上書きして再開始します。よろしいですか？')) return;
+  STORAGE_RECOVERY=null; // explicit confirmation temporarily unlocks the normal save path
+  if(save()){
+    console.warn('[RunOS storage] user restarted with demo data',{sourceKey:KEY,corruptKey:recovery.corruptKey});
+    showStorageWarning(`デモデータで再開始しました。${recovery.corruptKey?`退避データは ${recovery.corruptKey} に残しています。`:''}`,'warn');
+    route();
+  }else{
+    STORAGE_RECOVERY=recovery;
+    console.error('[RunOS storage] restart with demo data failed',{sourceKey:KEY,corruptKey:recovery.corruptKey});
+    showCorruptRecoveryWarning('デモデータの保存に失敗しました。');
+  }
+}
 function load(){
   let raw=null;
   try{
     raw=localStorage.getItem(KEY);
-    if(raw){
-      DB=validateStoredDB(JSON.parse(raw));
-      DB.profile = {...DEFAULT_PROFILE, ...DB.profile}; DB.plan=DB.plan||null; DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[]; DB.shoes=DB.shoes||[]; DB.env=DB.env||{temp:20,humidity:50,altitude:0}; DB.races=DB.races||[]; DB.integrations=DB.integrations||{}; DB.ui=DB.ui||{};
-      console.info('[RunOS storage] loaded',storageSizeInfo(raw));
-    }else{
-      console.warn('[RunOS storage] no saved data; generating demo data',{key:KEY});
-      const demoSaved=seedDemo();
-      showStorageWarning(
-        demoSaved===false?'保存データが見つからずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データが見つからないため、デモデータを生成しました。',
-        demoSaved===false?'error':'warn',demoSaved===false);
-    }
   }catch(e){
-    console.error('[RunOS storage] load failed; falling back to demo data',e,raw?storageSizeInfo(raw):{key:KEY,bytes:0});
+    console.error('[RunOS storage] localStorage read failed',e,{key:KEY});
+    seedDemo(false);
+    showStorageWarning(
+      '保存領域を読み込めないため、デモデータを一時表示しています。自動保存は行っていません。原因は開発者コンソールで確認できます。',
+      'error',true);
+    return;
+  }
+  if(!raw){
+    console.warn('[RunOS storage] no saved data; generating demo data',{key:KEY});
     const demoSaved=seedDemo();
     showStorageWarning(
-      demoSaved===false?'保存データを読み込めずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データを読み込めなかったため、デモデータにフォールバックしました。原因は開発者コンソールで確認できます。',
-      'error',demoSaved===false);
+      demoSaved===false?'保存データが見つからずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データが見つからないため、デモデータを生成しました。',
+      demoSaved===false?'error':'warn',demoSaved===false);
+    return;
+  }
+  try{
+    DB=validateStoredDB(JSON.parse(raw));
+    DB.profile = {...DEFAULT_PROFILE, ...DB.profile}; DB.plan=DB.plan||null; DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[]; DB.shoes=DB.shoes||[]; DB.env=DB.env||{temp:20,humidity:50,altitude:0}; DB.races=DB.races||[]; DB.integrations=DB.integrations||{}; DB.ui=DB.ui||{};
+    console.info('[RunOS storage] loaded',storageSizeInfo(raw));
+  }catch(e){
+    const corruptKey=archiveCorruptData(raw,e);
+    STORAGE_RECOVERY={active:true,raw,corruptKey,detectedAt:Date.now()};
+    console.error('[RunOS storage] corrupt data detected; demo data is temporary and saves are blocked',e,{
+      sourceKey:KEY,corruptKey,...storageSizeInfo(raw)
+    });
+    seedDemo(false);
+    showCorruptRecoveryWarning();
   }
 }
 function save(){
+  if(STORAGE_RECOVERY&&STORAGE_RECOVERY.active){
+    console.warn('[RunOS storage] save blocked until recovery choice is confirmed',{
+      sourceKey:KEY,corruptKey:STORAGE_RECOVERY.corruptKey
+    });
+    showCorruptRecoveryWarning('保存は実行していません。');
+    return false;
+  }
   let json;
   try{
     json=JSON.stringify(DB);
@@ -1056,7 +1141,7 @@ function readiness(){
    DEMO SEEDER — ~24 weeks of plausible marathon build + taper
    so every chart/metric is populated on first open.
    ============================================================ */
-function seedDemo(){
+function seedDemo(persist=true){
   const p={...DEFAULT_PROFILE};
   const acts=[], well=[];
   const R=rng(20260705);
@@ -1111,7 +1196,7 @@ function seedDemo(){
     }
   }
   DB={profile:p, activities:acts, wellness:well, plan:null, planOverrides:{}, adjustLog:[], shoes:DB.shoes||[], env:DB.env||{temp:20,humidity:50,altitude:0}, races:DB.races||[]};
-  return save();
+  return persist?save():true;
 }
 
 /* ============================================================
