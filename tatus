@@ -1,0 +1,116 @@
+warning: in the working copy of 'runos/RunOS v100 apex.html', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/runos/RunOS v100 apex.html b/runos/RunOS v100 apex.html[m
+[1mindex f635171..3d1e6b4 100644[m
+[1m--- a/runos/RunOS v100 apex.html[m	
+[1m+++ b/runos/RunOS v100 apex.html[m	
+[36m@@ -601,6 +601,11 @@[m [mtr.rec-on td{color:var(--ink)!important}[m
+ .wxchip{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:11px;background:var(--surface);border:1px solid var(--line);font-size:12px;color:var(--ink-2)}[m
+ .wxchip .t{font-family:var(--mono);font-weight:600;color:var(--ink);font-size:14px}[m
+ .wxchip button{background:none;border:none;color:var(--teal);font-size:11px;cursor:pointer;padding:0 0 0 4px}[m
+[32m+[m[32m/* persistence warning: intentionally small, persistent, and independent of view renders */[m
+[32m+[m[32m.storage-warning{position:fixed;z-index:90;top:calc(10px + env(safe-area-inset-top));right:12px;width:min(390px,calc(100vw - 24px));padding:10px 38px 10px 12px;border:1px solid rgba(245,178,62,.55);border-radius:10px;background:rgba(37,29,18,.97);color:var(--ink);box-shadow:var(--shadow);font-size:12px;line-height:1.5}[m
+[32m+[m[32m.storage-warning.error{border-color:rgba(255,105,97,.65);background:rgba(45,22,24,.97)}[m
+[32m+[m[32m.storage-warning a{color:var(--teal);font-weight:600;margin-left:6px;white-space:nowrap}[m
+[32m+[m[32m.storage-warning button{position:absolute;top:5px;right:7px;border:0;background:none;color:var(--ink-2);font-size:18px;line-height:1;cursor:pointer;padding:4px}[m
+ /* ---- v96: refinements ---- */[m
+ .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin}[m
+ .tscroll table{width:max-content;min-width:100%}[m
+[36m@@ -703,14 +708,84 @@[m [mconst DEFAULT_PROFILE = {[m
+ };[m
+ let DB = { profile:{...DEFAULT_PROFILE}, activities:[], wellness:[], plan:null, planOverrides:{}, adjustLog:[], shoes:[], env:{temp:20,humidity:50,altitude:0}, races:[] };[m
+ [m
+[32m+[m[32mfunction approxJSONBytes(json){[m
+[32m+[m[32m  try{ return new Blob([json]).size; }[m
+[32m+[m[32m  catch(e){ return json.length*2; } // conservative UTF-16 approximation[m
+[32m+[m[32m}[m
+[32m+[m[32mfunction storageSizeInfo(json){[m
+[32m+[m[32m  const bytes=approxJSONBytes(json);[m
+[32m+[m[32m  return {key:KEY,bytes,kib:Math.round(bytes/1024),mib:Math.round(bytes/104857.6)/10};[m
+[32m+[m[32m}[m
+[32m+[m[32mfunction showStorageWarning(message, level='warn', offerBackup=false){[m
+[32m+[m[32m  const render=()=>{[m
+[32m+[m[32m    let box=document.getElementById('storageWarning');[m
+[32m+[m[32m    if(!box){[m
+[32m+[m[32m      box=document.createElement('div');[m
+[32m+[m[32m      box.id='storageWarning';[m
+[32m+[m[32m      box.setAttribute('role','alert');[m
+[32m+[m[32m      document.body.appendChild(box);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    box.className='storage-warning'+(level==='error'?' error':'');[m
+[32m+[m[32m    box.textContent='';[m
+[32m+[m[32m    const text=document.createElement('span'); text.textContent=message; box.appendChild(text);[m
+[32m+[m[32m    if(offerBackup){[m
+[32m+[m[32m      const link=document.createElement('a'); link.href='#settings'; link.textContent='設定を開く'; box.appendChild(link);[m
+[32m+[m[32m    }[m
+[32m+[m[32m    const close=document.createElement('button'); close.type='button'; close.setAttribute('aria-label','閉じる');[m
+[32m+[m[32m    close.textContent='×'; close.onclick=()=>box.remove(); box.appendChild(close);[m
+[32m+[m[32m  };[m
+[32m+[m[32m  if(document.body) render();[m
+[32m+[m[32m  else document.addEventListener('DOMContentLoaded',render,{once:true});[m
+[32m+[m[32m}[m
+[32m+[m[32mfunction validateStoredDB(data){[m
+[32m+[m[32m  if(!data||typeof data!=='object'||Array.isArray(data)) throw new Error('保存データのルートがオブジェクトではありません');[m
+[32m+[m[32m  if(!Array.isArray(data.activities)) throw new Error('activities が配列ではありません');[m
+[32m+[m[32m  if(!Array.isArray(data.wellness)) throw new Error('wellness が配列ではありません');[m
+[32m+[m[32m  return data;[m
+[32m+[m[32m}[m
+ function load(){[m
+[32m+[m[32m  let raw=null;[m
+[32m+[m[32m  try{[m
+[32m+[m[32m    raw=localStorage.getItem(KEY);[m
+[32m+[m[32m    if(raw){[m
+[32m+[m[32m      DB=validateStoredDB(JSON.parse(raw));[m
+[32m+[m[32m      DB.profile = {...DEFAULT_PROFILE, ...DB.profile}; DB.plan=DB.plan||null; DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[]; DB.shoes=DB.shoes||[]; DB.env=DB.env||{temp:20,humidity:50,altitude:0}; DB.races=DB.races||[]; DB.integrations=DB.integrations||{}; DB.ui=DB.ui||{};[m
+[32m+[m[32m      console.info('[RunOS storage] loaded',storageSizeInfo(raw));[m
+[32m+[m[32m    }else{[m
+[32m+[m[32m      console.warn('[RunOS storage] no saved data; generating demo data',{key:KEY});[m
+[32m+[m[32m      const demoSaved=seedDemo();[m
+[32m+[m[32m      showStorageWarning([m
+[32m+[m[32m        demoSaved===false?'保存データが見つからずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データが見つからないため、デモデータを生成しました。',[m
+[32m+[m[32m        demoSaved===false?'error':'warn',demoSaved===false);[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }catch(e){[m
+[32m+[m[32m    console.error('[RunOS storage] load failed; falling back to demo data',e,raw?storageSizeInfo(raw):{key:KEY,bytes:0});[m
+[32m+[m[32m    const demoSaved=seedDemo();[m
+[32m+[m[32m    showStorageWarning([m
+[32m+[m[32m      demoSaved===false?'保存データを読み込めずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データを読み込めなかったため、デモデータにフォールバックしました。原因は開発者コンソールで確認できます。',[m
+[32m+[m[32m      'error',demoSaved===false);[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m[32mfunction save(){[m
+[32m+[m[32m  let json;[m
+[32m+[m[32m  try{[m
+[32m+[m[32m    json=JSON.stringify(DB);[m
+[32m+[m[32m  }catch(e){[m
+[32m+[m[32m    console.error('[RunOS storage] JSON serialization failed',e,{key:KEY});[m
+[32m+[m[32m    showStorageWarning('データの変換中に保存に失敗しました。設定からバックアップを書き出してください。','error',true);[m
+[32m+[m[32m    return false;[m
+[32m+[m[32m  }[m
+[32m+[m[32m  const size=storageSizeInfo(json);[m
+[32m+[m[32m  console.info('[RunOS storage] save attempt',size);[m
+   try{[m
+[31m-    const raw = localStorage.getItem(KEY);[m
+[31m-    if(raw){ DB = JSON.parse(raw); DB.profile = {...DEFAULT_PROFILE, ...DB.profile}; DB.plan=DB.plan||null; DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[]; DB.shoes=DB.shoes||[]; DB.env=DB.env||{temp:20,humidity:50,altitude:0}; DB.races=DB.races||[]; DB.integrations=DB.integrations||{}; DB.ui=DB.ui||{}; }[m
+[31m-    else { seedDemo(); }[m
+[31m-  }catch(e){ seedDemo(); }[m
+[32m+[m[32m    localStorage.setItem(KEY,json);[m
+[32m+[m[32m    return true;[m
+[32m+[m[32m  }catch(e){[m
+[32m+[m[32m    console.error('[RunOS storage] localStorage write failed',e,size);[m
+[32m+[m[32m    showStorageWarning(`保存に失敗しました（概算 ${size.mib} MB）。設定からバックアップを書き出してください。`,'error',true);[m
+[32m+[m[32m    return false;[m
+[32m+[m[32m  }[m
+ }[m
+[31m-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(DB)); }catch(e){} }[m
+ [m
+ /* ---------- small utils ---------- */[m
+ const pad=n=>String(n).padStart(2,'0');[m
+[36m@@ -1036,7 +1111,7 @@[m [mfunction seedDemo(){[m
+     }[m
+   }[m
+   DB={profile:p, activities:acts, wellness:well, plan:null, planOverrides:{}, adjustLog:[], shoes:DB.shoes||[], env:DB.env||{temp:20,humidity:50,altitude:0}, races:DB.races||[]};[m
+[31m-  save();[m
+[32m+[m[32m  return save();[m
+ }[m
+ [m
+ /* ============================================================[m

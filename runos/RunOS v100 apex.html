@@ -601,6 +601,11 @@ tr.rec-on td{color:var(--ink)!important}
 .wxchip{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:11px;background:var(--surface);border:1px solid var(--line);font-size:12px;color:var(--ink-2)}
 .wxchip .t{font-family:var(--mono);font-weight:600;color:var(--ink);font-size:14px}
 .wxchip button{background:none;border:none;color:var(--teal);font-size:11px;cursor:pointer;padding:0 0 0 4px}
+/* persistence warning: intentionally small, persistent, and independent of view renders */
+.storage-warning{position:fixed;z-index:90;top:calc(10px + env(safe-area-inset-top));right:12px;width:min(390px,calc(100vw - 24px));padding:10px 38px 10px 12px;border:1px solid rgba(245,178,62,.55);border-radius:10px;background:rgba(37,29,18,.97);color:var(--ink);box-shadow:var(--shadow);font-size:12px;line-height:1.5}
+.storage-warning.error{border-color:rgba(255,105,97,.65);background:rgba(45,22,24,.97)}
+.storage-warning a{color:var(--teal);font-weight:600;margin-left:6px;white-space:nowrap}
+.storage-warning button{position:absolute;top:5px;right:7px;border:0;background:none;color:var(--ink-2);font-size:18px;line-height:1;cursor:pointer;padding:4px}
 /* ---- v96: refinements ---- */
 .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
 .tscroll table{width:max-content;min-width:100%}
@@ -703,14 +708,84 @@ const DEFAULT_PROFILE = {
 };
 let DB = { profile:{...DEFAULT_PROFILE}, activities:[], wellness:[], plan:null, planOverrides:{}, adjustLog:[], shoes:[], env:{temp:20,humidity:50,altitude:0}, races:[] };
 
-function load(){
-  try{
-    const raw = localStorage.getItem(KEY);
-    if(raw){ DB = JSON.parse(raw); DB.profile = {...DEFAULT_PROFILE, ...DB.profile}; DB.plan=DB.plan||null; DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[]; DB.shoes=DB.shoes||[]; DB.env=DB.env||{temp:20,humidity:50,altitude:0}; DB.races=DB.races||[]; DB.integrations=DB.integrations||{}; DB.ui=DB.ui||{}; }
-    else { seedDemo(); }
-  }catch(e){ seedDemo(); }
+function approxJSONBytes(json){
+  try{ return new Blob([json]).size; }
+  catch(e){ return json.length*2; } // conservative UTF-16 approximation
 }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(DB)); }catch(e){} }
+function storageSizeInfo(json){
+  const bytes=approxJSONBytes(json);
+  return {key:KEY,bytes,kib:Math.round(bytes/1024),mib:Math.round(bytes/104857.6)/10};
+}
+function showStorageWarning(message, level='warn', offerBackup=false){
+  const render=()=>{
+    let box=document.getElementById('storageWarning');
+    if(!box){
+      box=document.createElement('div');
+      box.id='storageWarning';
+      box.setAttribute('role','alert');
+      document.body.appendChild(box);
+    }
+    box.className='storage-warning'+(level==='error'?' error':'');
+    box.textContent='';
+    const text=document.createElement('span'); text.textContent=message; box.appendChild(text);
+    if(offerBackup){
+      const link=document.createElement('a'); link.href='#settings'; link.textContent='設定を開く'; box.appendChild(link);
+    }
+    const close=document.createElement('button'); close.type='button'; close.setAttribute('aria-label','閉じる');
+    close.textContent='×'; close.onclick=()=>box.remove(); box.appendChild(close);
+  };
+  if(document.body) render();
+  else document.addEventListener('DOMContentLoaded',render,{once:true});
+}
+function validateStoredDB(data){
+  if(!data||typeof data!=='object'||Array.isArray(data)) throw new Error('保存データのルートがオブジェクトではありません');
+  if(!Array.isArray(data.activities)) throw new Error('activities が配列ではありません');
+  if(!Array.isArray(data.wellness)) throw new Error('wellness が配列ではありません');
+  return data;
+}
+function load(){
+  let raw=null;
+  try{
+    raw=localStorage.getItem(KEY);
+    if(raw){
+      DB=validateStoredDB(JSON.parse(raw));
+      DB.profile = {...DEFAULT_PROFILE, ...DB.profile}; DB.plan=DB.plan||null; DB.planOverrides=DB.planOverrides||{}; DB.adjustLog=DB.adjustLog||[]; DB.shoes=DB.shoes||[]; DB.env=DB.env||{temp:20,humidity:50,altitude:0}; DB.races=DB.races||[]; DB.integrations=DB.integrations||{}; DB.ui=DB.ui||{};
+      console.info('[RunOS storage] loaded',storageSizeInfo(raw));
+    }else{
+      console.warn('[RunOS storage] no saved data; generating demo data',{key:KEY});
+      const demoSaved=seedDemo();
+      showStorageWarning(
+        demoSaved===false?'保存データが見つからずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データが見つからないため、デモデータを生成しました。',
+        demoSaved===false?'error':'warn',demoSaved===false);
+    }
+  }catch(e){
+    console.error('[RunOS storage] load failed; falling back to demo data',e,raw?storageSizeInfo(raw):{key:KEY,bytes:0});
+    const demoSaved=seedDemo();
+    showStorageWarning(
+      demoSaved===false?'保存データを読み込めずデモデータへ切り替えましたが、保存にも失敗しました。設定からバックアップを書き出してください。':'保存データを読み込めなかったため、デモデータにフォールバックしました。原因は開発者コンソールで確認できます。',
+      'error',demoSaved===false);
+  }
+}
+function save(){
+  let json;
+  try{
+    json=JSON.stringify(DB);
+  }catch(e){
+    console.error('[RunOS storage] JSON serialization failed',e,{key:KEY});
+    showStorageWarning('データの変換中に保存に失敗しました。設定からバックアップを書き出してください。','error',true);
+    return false;
+  }
+  const size=storageSizeInfo(json);
+  console.info('[RunOS storage] save attempt',size);
+  try{
+    localStorage.setItem(KEY,json);
+    return true;
+  }catch(e){
+    console.error('[RunOS storage] localStorage write failed',e,size);
+    showStorageWarning(`保存に失敗しました（概算 ${size.mib} MB）。設定からバックアップを書き出してください。`,'error',true);
+    return false;
+  }
+}
 
 /* ---------- small utils ---------- */
 const pad=n=>String(n).padStart(2,'0');
@@ -1036,7 +1111,7 @@ function seedDemo(){
     }
   }
   DB={profile:p, activities:acts, wellness:well, plan:null, planOverrides:{}, adjustLog:[], shoes:DB.shoes||[], env:DB.env||{temp:20,humidity:50,altitude:0}, races:DB.races||[]};
-  save();
+  return save();
 }
 
 /* ============================================================
