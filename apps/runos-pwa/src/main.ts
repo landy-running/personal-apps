@@ -3,11 +3,15 @@ import { calculatePaceDemo, describePaceDemoResult } from "./paceDemo";
 import { registerServiceWorker } from "./registerServiceWorker";
 import {
   RUNOS_DEMO_SETTINGS_KEY,
+  createRunosDemoBackupFileName,
+  createRunosDemoBackupText,
   createRunosDemoSettings,
   createRunosStorageAdapter,
   describeRunosLoadResult,
+  describeRunosRestoreResult,
   describeRunosSaveResult,
   isRunosDemoSettings,
+  restoreRunosDemoBackupText,
   writeRunosDemoCorruptJson
 } from "./storageDemo";
 
@@ -52,6 +56,11 @@ app.innerHTML = `
       <div class="actions">
         <button type="button" data-action="save">設定を保存</button>
         <button type="button" data-action="load">読込確認</button>
+        <button type="button" data-action="export-backup">バックアップ書き出し</button>
+        <label class="file-button">
+          バックアップ読み込み
+          <input id="backup-import" class="backup-file-input" type="file" accept="application/json,.json" />
+        </label>
         <button type="button" data-action="corrupt">破損JSONを注入して検知</button>
       </div>
       <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
@@ -86,6 +95,7 @@ const paceDistanceInput = document.querySelector<HTMLInputElement>("#pace-distan
 const paceMinutesInput = document.querySelector<HTMLInputElement>("#pace-minutes");
 const paceSecondsInput = document.querySelector<HTMLInputElement>("#pace-seconds");
 const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
+const backupImportInput = document.querySelector<HTMLInputElement>("#backup-import");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -104,6 +114,38 @@ document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListe
 document.querySelector<HTMLButtonElement>("[data-action='load']")?.addEventListener("click", () => {
   const result = storageAdapter.loadJson(RUNOS_DEMO_SETTINGS_KEY, isRunosDemoSettings);
   updateOutput(describeRunosLoadResult(result, storageAdapter.mode));
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='export-backup']")?.addEventListener("click", () => {
+  const result = storageAdapter.loadJson(RUNOS_DEMO_SETTINGS_KEY, isRunosDemoSettings);
+  if (result.status !== "success") {
+    updateOutput(`バックアップ書き出し不可: ${describeRunosLoadResult(result, storageAdapter.mode)}`);
+    return;
+  }
+
+  const backupText = createRunosDemoBackupText(result.value);
+  const fileName = createRunosDemoBackupFileName();
+  downloadTextFile(fileName, backupText);
+  updateOutput(`バックアップを書き出しました: ${fileName}`);
+});
+
+backupImportInput?.addEventListener("change", () => {
+  const file = backupImportInput.files?.[0];
+  if (!file) return;
+
+  file
+    .text()
+    .then((text) => {
+      const result = restoreRunosDemoBackupText(storageAdapter, text);
+      updateOutput(describeRunosRestoreResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[runos-pwa] backup import failed", error);
+      updateOutput("バックアップ読み込みに失敗しました。consoleを確認してください。");
+    })
+    .finally(() => {
+      backupImportInput.value = "";
+    });
 });
 
 document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventListener("click", () => {
@@ -148,4 +190,16 @@ function getBrowserLocalStorage(): Storage | undefined {
     console.warn("[runos-pwa] localStorage is unavailable", error);
     return undefined;
   }
+}
+
+function downloadTextFile(fileName: string, text: string): void {
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }

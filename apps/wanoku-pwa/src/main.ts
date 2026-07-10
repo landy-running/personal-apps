@@ -2,11 +2,15 @@ import { angleDiff } from "@personal/wanoku-core";
 import { registerServiceWorker } from "./registerServiceWorker";
 import {
   WANOKU_DEMO_SETTINGS_KEY,
+  createWanokuDemoBackupFileName,
+  createWanokuDemoBackupText,
   createWanokuDemoSettings,
   createWanokuStorageAdapter,
   describeWanokuLoadResult,
+  describeWanokuRestoreResult,
   describeWanokuSaveResult,
   isWanokuDemoSettings,
+  restoreWanokuDemoBackupText,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
 import { calculateWindDemo, describeWindDemoResult } from "./windDemo";
@@ -51,6 +55,11 @@ app.innerHTML = `
       <div class="actions">
         <button type="button" data-action="save">設定を保存</button>
         <button type="button" data-action="load">読込確認</button>
+        <button type="button" data-action="export-backup">バックアップ書き出し</button>
+        <label class="file-button">
+          バックアップ読み込み
+          <input id="backup-import" class="backup-file-input" type="file" accept="application/json,.json" />
+        </label>
         <button type="button" data-action="corrupt">破損JSONを注入して検知</button>
       </div>
       <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
@@ -80,6 +89,7 @@ const windOutput = document.querySelector<HTMLPreElement>("#wind-result");
 const windAngleAInput = document.querySelector<HTMLInputElement>("#wind-angle-a");
 const windAngleBInput = document.querySelector<HTMLInputElement>("#wind-angle-b");
 const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
+const backupImportInput = document.querySelector<HTMLInputElement>("#backup-import");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -98,6 +108,38 @@ document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListe
 document.querySelector<HTMLButtonElement>("[data-action='load']")?.addEventListener("click", () => {
   const result = storageAdapter.loadJson(WANOKU_DEMO_SETTINGS_KEY, isWanokuDemoSettings);
   updateOutput(describeWanokuLoadResult(result, storageAdapter.mode));
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='export-backup']")?.addEventListener("click", () => {
+  const result = storageAdapter.loadJson(WANOKU_DEMO_SETTINGS_KEY, isWanokuDemoSettings);
+  if (result.status !== "success") {
+    updateOutput(`バックアップ書き出し不可: ${describeWanokuLoadResult(result, storageAdapter.mode)}`);
+    return;
+  }
+
+  const backupText = createWanokuDemoBackupText(result.value);
+  const fileName = createWanokuDemoBackupFileName();
+  downloadTextFile(fileName, backupText);
+  updateOutput(`バックアップを書き出しました: ${fileName}`);
+});
+
+backupImportInput?.addEventListener("change", () => {
+  const file = backupImportInput.files?.[0];
+  if (!file) return;
+
+  file
+    .text()
+    .then((text) => {
+      const result = restoreWanokuDemoBackupText(storageAdapter, text);
+      updateOutput(describeWanokuRestoreResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[wanoku-pwa] backup import failed", error);
+      updateOutput("バックアップ読み込みに失敗しました。consoleを確認してください。");
+    })
+    .finally(() => {
+      backupImportInput.value = "";
+    });
 });
 
 document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventListener("click", () => {
@@ -137,4 +179,16 @@ function getBrowserLocalStorage(): Storage | undefined {
     console.warn("[wanoku-pwa] localStorage is unavailable", error);
     return undefined;
   }
+}
+
+function downloadTextFile(fileName: string, text: string): void {
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }

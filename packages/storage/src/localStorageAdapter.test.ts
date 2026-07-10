@@ -97,6 +97,25 @@ describe("LocalStorageAdapter", () => {
     expect(storage.getItem("meridian.v1")).toBe("{broken-json");
   });
 
+  it("allows explicit overwrite after a corrupt lock", () => {
+    const storage = new MemoryStorage();
+    storage.setItem("logs", "{broken-json");
+    const adapter = new LocalStorageAdapter<"logs">({
+      app: "wanoku-navi",
+      storage,
+      now: () => 1783600000004
+    });
+
+    const corrupt = adapter.loadJson("logs", Array.isArray);
+    expect(corrupt.status).toBe("corrupt");
+
+    adapter.allowOverwrite("logs");
+    const restored = adapter.saveJson("logs", []);
+
+    expect(restored.status).toBe("success");
+    expect(storage.getItem("logs")).toBe("[]");
+  });
+
   it("archives required-shape failures with the generic <key>.corrupt.<timestamp> pattern", () => {
     const storage = new MemoryStorage();
     storage.setItem("logs", "{}");

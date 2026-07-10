@@ -1,13 +1,20 @@
 import {
+  type BackupJson,
   LocalStorageAdapter,
   type LoadJsonResult,
   type LocalStorageLike,
+  type ParseBackupJsonResult,
   type SaveResult,
-  type StorageMode
+  type StorageMode,
+  createBackupJson,
+  parseBackupJson,
+  stringifyBackupJson
 } from "@personal/storage";
 
 export const WANOKU_DEMO_SETTINGS_KEY = "wanoku-pwa.demo.settings" as const;
 export const WANOKU_DEMO_CORRUPT_JSON = "{broken-wanoku-demo-json";
+export const WANOKU_DEMO_BACKUP_TYPE = "wanoku-pwa-demo-settings" as const;
+export const WANOKU_DEMO_BACKUP_SCHEMA_VERSION = "wanoku-pwa-demo-settings-v1";
 
 export type WanokuDemoSettings = {
   app: "wanoku-pwa-demo";
@@ -42,6 +49,56 @@ export function writeWanokuDemoCorruptJson(storage: LocalStorageLike): void {
   storage.setItem(WANOKU_DEMO_SETTINGS_KEY, WANOKU_DEMO_CORRUPT_JSON);
 }
 
+export function createWanokuDemoBackup(settings: WanokuDemoSettings, createdAt = new Date().toISOString()): BackupJson<
+  WanokuDemoSettings,
+  typeof WANOKU_DEMO_BACKUP_TYPE
+> {
+  return createBackupJson({
+    backupType: WANOKU_DEMO_BACKUP_TYPE,
+    appId: "wanoku-navi",
+    schemaVersion: WANOKU_DEMO_BACKUP_SCHEMA_VERSION,
+    createdAt,
+    data: settings
+  });
+}
+
+export function createWanokuDemoBackupText(settings: WanokuDemoSettings, createdAt?: string): string {
+  return stringifyBackupJson(createWanokuDemoBackup(settings, createdAt));
+}
+
+export function parseWanokuDemoBackupText(
+  text: string
+): ParseBackupJsonResult<WanokuDemoSettings, typeof WANOKU_DEMO_BACKUP_TYPE> {
+  return parseBackupJson({
+    text,
+    expectedBackupType: WANOKU_DEMO_BACKUP_TYPE,
+    expectedAppId: "wanoku-navi",
+    expectedSchemaVersion: WANOKU_DEMO_BACKUP_SCHEMA_VERSION,
+    validateData: isWanokuDemoSettings
+  });
+}
+
+export function restoreWanokuDemoBackupText(
+  adapter: LocalStorageAdapter<typeof WANOKU_DEMO_SETTINGS_KEY>,
+  text: string
+): SaveResult<typeof WANOKU_DEMO_SETTINGS_KEY> | { status: "rejected"; reason: string; message: string } {
+  const parsed = parseWanokuDemoBackupText(text);
+  if (!parsed.ok) {
+    return {
+      status: "rejected",
+      reason: parsed.reason,
+      message: parsed.message
+    };
+  }
+
+  adapter.allowOverwrite(WANOKU_DEMO_SETTINGS_KEY);
+  return adapter.saveJson(WANOKU_DEMO_SETTINGS_KEY, parsed.backup.data);
+}
+
+export function createWanokuDemoBackupFileName(now = new Date()): string {
+  return `wanoku-pwa-demo-backup-${now.toISOString().slice(0, 10)}.json`;
+}
+
 export function describeWanokuSaveResult(result: SaveResult<typeof WANOKU_DEMO_SETTINGS_KEY>): string {
   switch (result.status) {
     case "success":
@@ -73,3 +130,12 @@ export function describeWanokuLoadResult(
   }
 }
 
+export function describeWanokuRestoreResult(
+  result: SaveResult<typeof WANOKU_DEMO_SETTINGS_KEY> | { status: "rejected"; reason: string; message: string }
+): string {
+  if (result.status === "rejected") {
+    return `復元拒否: reason=${result.reason}, message=${result.message}`;
+  }
+
+  return `復元結果: ${describeWanokuSaveResult(result)}`;
+}

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   WANOKU_DEMO_SETTINGS_KEY,
+  createWanokuDemoBackupText,
   createWanokuDemoSettings,
   createWanokuStorageAdapter,
   describeWanokuLoadResult,
+  describeWanokuRestoreResult,
   describeWanokuSaveResult,
   isWanokuDemoSettings,
+  restoreWanokuDemoBackupText,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
 import type { LocalStorageLike } from "@personal/storage";
@@ -46,5 +49,39 @@ describe("wanoku-navi PWA storage demo", () => {
     expect(result.status).toBe("corrupt");
     expect(describeWanokuLoadResult(result, adapter.mode)).toContain(`${WANOKU_DEMO_SETTINGS_KEY}.corrupt.`);
   });
-});
 
+  it("exports and restores demo backup JSON", () => {
+    const storage = new MemoryStorage();
+    const adapter = createWanokuStorageAdapter(storage);
+    const backupText = createWanokuDemoBackupText(createWanokuDemoSettings(new Date("2026-07-10T00:00:00.000Z")), "2026-07-10T00:00:00.000Z");
+
+    const result = restoreWanokuDemoBackupText(adapter, backupText);
+
+    expect(result.status).toBe("success");
+    expect(storage.getItem(WANOKU_DEMO_SETTINGS_KEY)).toContain("wanoku-pwa-demo");
+    expect(describeWanokuRestoreResult(result)).toContain("復元結果");
+  });
+
+  it("rejects corrupt backup JSON and appId mismatch", () => {
+    const storage = new MemoryStorage();
+    const adapter = createWanokuStorageAdapter(storage);
+    const corrupt = restoreWanokuDemoBackupText(adapter, "{broken-json");
+    const runosBackup = JSON.stringify({
+      backupType: "wanoku-pwa-demo-settings",
+      appId: "runos",
+      schemaVersion: "wanoku-pwa-demo-settings-v1",
+      createdAt: "2026-07-10T00:00:00.000Z",
+      data: createWanokuDemoSettings(new Date("2026-07-10T00:00:00.000Z")),
+      checksum: {
+        algorithm: "byte-length-and-char-sum-v1",
+        bytes: 1,
+        sum: 1
+      }
+    });
+    const mismatch = restoreWanokuDemoBackupText(adapter, runosBackup);
+
+    expect(corrupt).toMatchObject({ status: "rejected", reason: "json-parse-failed" });
+    expect(mismatch).toMatchObject({ status: "rejected", reason: "app-id-mismatch" });
+    expect(storage.getItem(WANOKU_DEMO_SETTINGS_KEY)).toBeNull();
+  });
+});

@@ -88,6 +88,22 @@ export class LocalStorageAdapter<Key extends string = string> {
     return this.blockedKeys.has(key);
   }
 
+  allowOverwrite(keys?: Key | ReadonlyArray<Key>): void {
+    if (keys === undefined) {
+      this.blockedKeys.clear();
+    } else if (typeof keys === "string") {
+      this.blockedKeys.delete(keys);
+    } else {
+      for (const key of keys) {
+        this.blockedKeys.delete(key);
+      }
+    }
+
+    if (this.currentMode === "blocked") {
+      this.currentMode = this.storage ? "local" : "memory";
+    }
+  }
+
   prepareJson(value: unknown): JsonStringifyResult {
     return safeJsonStringify(value);
   }
@@ -310,4 +326,3 @@ export function archiveCorruptValue<Key extends string>(
     };
   }
 }
-

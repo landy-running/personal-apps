@@ -138,6 +138,25 @@ button {
   font-weight: 800;
 }
 
+.file-button {
+  display: inline-grid;
+  place-items: center;
+  min-height: 44px;
+  border-radius: 999px;
+  padding: 0 16px;
+  background: rgba(204, 251, 241, 0.16);
+  color: #ccfbf1;
+  font-weight: 800;
+}
+
+.backup-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
