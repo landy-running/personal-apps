@@ -1,0 +1,15 @@
+name = "runos-strava-worker"
+main = "src/index.js"
+compatibility_date = "2026-07-10"
+
+# This worker is currently a mock.
+# Do not put STRAVA_CLIENT_SECRET or refresh tokens in this file.
+#
+# Production candidates:
+# - STRAVA_CLIENT_ID: Cloudflare environment variable
+# - STRAVA_REDIRECT_URI: Cloudflare environment variable
+# - STRAVA_CLIENT_SECRET: Cloudflare secret
+# - TOKEN_STORAGE: "mock", "kv", or "d1"
+
+[vars]
+TOKEN_STORAGE = "mock"
