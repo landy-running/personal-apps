@@ -27,6 +27,8 @@ export const WANOKU_DEMO_BACKUP_SCHEMA_VERSION = "wanoku-pwa-demo-data-v1";
 export const WANOKU_INDEXEDDB_DB_NAME = "wanoku-pwa" as const;
 export const WANOKU_INDEXEDDB_VERSION = 1;
 export const WANOKU_INDEXEDDB_STORE_NAME = "demo-key-value" as const;
+export const WANOKU_INDEXEDDB_BACKUP_TYPE = "wanoku-pwa-indexeddb-demo-data" as const;
+export const WANOKU_INDEXEDDB_BACKUP_SCHEMA_VERSION = "wanoku-pwa-indexeddb-demo-data-v1";
 
 export type WanokuDemoStorageKey = typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY;
 
@@ -60,6 +62,33 @@ export type WanokuIndexedDbDemoLoadResult = {
   catchLogCount: number;
 };
 
+export type WanokuIndexedDbDemoBackupExportResult =
+  | {
+      status: "exported";
+      backupText: string;
+      fileName: string;
+      backup: BackupJson<WanokuDemoBackupData, typeof WANOKU_INDEXEDDB_BACKUP_TYPE>;
+      catchLogCount: number;
+    }
+  | {
+      status: "rejected";
+      reason: string;
+      message: string;
+    };
+
+export type WanokuIndexedDbDemoRestoreResult =
+  | {
+      status: "restored";
+      settingsResult: SaveResult<WanokuDemoStorageKey>;
+      catchLogsResult: SaveResult<WanokuDemoStorageKey>;
+      catchLogCount: number;
+    }
+  | {
+      status: "rejected";
+      reason: string;
+      message: string;
+    };
+
 export type WanokuDemoRestoreResult =
   | {
       status: "restored";
@@ -75,7 +104,9 @@ export type WanokuDemoRestoreResult =
 type WanokuIndexedDbAdapterLike = Pick<
   IndexedDbJsonAdapter<WanokuDemoStorageKey>,
   "mode" | "loadJson" | "saveJson"
->;
+> & {
+  allowOverwrite?: (keys?: WanokuDemoStorageKey | ReadonlyArray<WanokuDemoStorageKey>) => void;
+};
 
 export function createWanokuStorageAdapter(storage?: LocalStorageLike): LocalStorageAdapter<WanokuDemoStorageKey> {
   return new LocalStorageAdapter<WanokuDemoStorageKey>({
@@ -199,6 +230,23 @@ export function createWanokuDemoBackupText(data: WanokuDemoBackupData, createdAt
   return stringifyBackupJson(createWanokuDemoBackup(data, createdAt));
 }
 
+export function createWanokuIndexedDbDemoBackup(
+  data: WanokuDemoBackupData,
+  createdAt = new Date().toISOString()
+): BackupJson<WanokuDemoBackupData, typeof WANOKU_INDEXEDDB_BACKUP_TYPE> {
+  return createBackupJson({
+    backupType: WANOKU_INDEXEDDB_BACKUP_TYPE,
+    appId: "wanoku-navi",
+    schemaVersion: WANOKU_INDEXEDDB_BACKUP_SCHEMA_VERSION,
+    createdAt,
+    data
+  });
+}
+
+export function createWanokuIndexedDbDemoBackupText(data: WanokuDemoBackupData, createdAt?: string): string {
+  return stringifyBackupJson(createWanokuIndexedDbDemoBackup(data, createdAt));
+}
+
 export function parseWanokuDemoBackupText(
   text: string
 ): ParseBackupJsonResult<WanokuDemoBackupData, typeof WANOKU_DEMO_BACKUP_TYPE> {
@@ -211,12 +259,61 @@ export function parseWanokuDemoBackupText(
   });
 }
 
+export function parseWanokuIndexedDbDemoBackupText(
+  text: string
+): ParseBackupJsonResult<WanokuDemoBackupData, typeof WANOKU_INDEXEDDB_BACKUP_TYPE> {
+  return parseBackupJson({
+    text,
+    expectedBackupType: WANOKU_INDEXEDDB_BACKUP_TYPE,
+    expectedAppId: "wanoku-navi",
+    expectedSchemaVersion: WANOKU_INDEXEDDB_BACKUP_SCHEMA_VERSION,
+    validateData: isWanokuDemoBackupData
+  });
+}
+
 export function loadWanokuDemoBackupData(adapter: LocalStorageAdapter<WanokuDemoStorageKey>): WanokuDemoBackupData {
   const settingsResult = adapter.loadJson(WANOKU_DEMO_SETTINGS_KEY, isWanokuDemoSettings);
 
   return {
     settings: settingsResult.status === "success" ? settingsResult.value : createWanokuDemoSettings(),
     catchLogs: getWanokuCatchLogsOrEmpty(adapter)
+  };
+}
+
+export async function exportWanokuIndexedDbDemoBackupText(
+  indexedDbAdapter: WanokuIndexedDbAdapterLike,
+  now = new Date()
+): Promise<WanokuIndexedDbDemoBackupExportResult> {
+  const loaded = await loadWanokuDemoFromIndexedDb(indexedDbAdapter, now);
+
+  if (loaded.settingsResult.status !== "success") {
+    return {
+      status: "rejected",
+      reason: `settings-${loaded.settingsResult.status}`,
+      message: `IndexedDB settingsをバックアップできません: ${describeWanokuIndexedDbLoadLine(loaded.settingsResult)}`
+    };
+  }
+
+  if (loaded.catchLogsResult.status !== "success") {
+    return {
+      status: "rejected",
+      reason: `catchLogs-${loaded.catchLogsResult.status}`,
+      message: `IndexedDB catchLogsをバックアップできません: ${describeWanokuIndexedDbLoadLine(loaded.catchLogsResult)}`
+    };
+  }
+
+  const data = {
+    settings: loaded.settingsResult.value,
+    catchLogs: loaded.catchLogsResult.value
+  };
+  const backup = createWanokuIndexedDbDemoBackup(data, now.toISOString());
+
+  return {
+    status: "exported",
+    backup,
+    backupText: stringifyBackupJson(backup),
+    fileName: createWanokuIndexedDbDemoBackupFileName(now),
+    catchLogCount: data.catchLogs.length
   };
 }
 
@@ -256,6 +353,31 @@ export async function loadWanokuDemoFromIndexedDb(
   };
 }
 
+export async function restoreWanokuIndexedDbDemoBackupText(
+  indexedDbAdapter: WanokuIndexedDbAdapterLike,
+  text: string
+): Promise<WanokuIndexedDbDemoRestoreResult> {
+  const parsed = parseWanokuIndexedDbDemoBackupText(text);
+  if (!parsed.ok) {
+    return {
+      status: "rejected",
+      reason: parsed.reason,
+      message: parsed.message
+    };
+  }
+
+  indexedDbAdapter.allowOverwrite?.([WANOKU_DEMO_SETTINGS_KEY, WANOKU_DEMO_CATCH_LOGS_KEY]);
+  const settingsResult = await indexedDbAdapter.saveJson(WANOKU_DEMO_SETTINGS_KEY, parsed.backup.data.settings);
+  const catchLogsResult = await indexedDbAdapter.saveJson(WANOKU_DEMO_CATCH_LOGS_KEY, parsed.backup.data.catchLogs);
+
+  return {
+    status: "restored",
+    settingsResult,
+    catchLogsResult,
+    catchLogCount: parsed.backup.data.catchLogs.length
+  };
+}
+
 export function restoreWanokuDemoBackupText(adapter: LocalStorageAdapter<WanokuDemoStorageKey>, text: string): WanokuDemoRestoreResult {
   const parsed = parseWanokuDemoBackupText(text);
   if (!parsed.ok) {
@@ -276,6 +398,10 @@ export function restoreWanokuDemoBackupText(adapter: LocalStorageAdapter<WanokuD
 
 export function createWanokuDemoBackupFileName(now = new Date()): string {
   return `wanoku-pwa-demo-backup-${now.toISOString().slice(0, 10)}.json`;
+}
+
+export function createWanokuIndexedDbDemoBackupFileName(now = new Date()): string {
+  return `wanoku-pwa-idb-demo-backup-${now.toISOString().slice(0, 10)}.json`;
 }
 
 export function describeWanokuSaveResult(result: SaveResult<WanokuDemoStorageKey>): string {
@@ -335,6 +461,29 @@ export function describeWanokuIndexedDbLoadResult(result: WanokuIndexedDbDemoLoa
 件数: catchLogs=${result.catchLogCount}
 settings: ${describeWanokuIndexedDbLoadLine(result.settingsResult)}
 catchLogs: ${describeWanokuIndexedDbLoadLine(result.catchLogsResult)}`;
+}
+
+export function describeWanokuIndexedDbBackupExportResult(result: WanokuIndexedDbDemoBackupExportResult): string {
+  if (result.status === "rejected") {
+    return `IndexedDBバックアップ書き出し不可: reason=${result.reason}, message=${result.message}`;
+  }
+
+  return `IndexedDBバックアップを書き出しました:
+file=${result.fileName}
+backupType=${result.backup.backupType}
+schemaVersion=${result.backup.schemaVersion}
+件数: catchLogs=${result.catchLogCount}`;
+}
+
+export function describeWanokuIndexedDbRestoreResult(result: WanokuIndexedDbDemoRestoreResult): string {
+  if (result.status === "rejected") {
+    return `IndexedDB復元拒否: reason=${result.reason}, message=${result.message}`;
+  }
+
+  return `IndexedDB復元結果:
+件数: catchLogs=${result.catchLogCount}
+settings: ${describeWanokuSaveResult(result.settingsResult)}
+catchLogs: ${describeWanokuSaveResult(result.catchLogsResult)}`;
 }
 
 function describeWanokuIndexedDbLoadLine<Value>(result: LoadJsonResult<WanokuDemoStorageKey, Value>): string {

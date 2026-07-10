@@ -11,15 +11,19 @@ import {
   createRunosIndexedDbAdapter,
   createRunosStorageAdapter,
   deleteRunosRunLog,
+  describeRunosIndexedDbBackupExportResult,
   describeRunosIndexedDbLoadResult,
+  describeRunosIndexedDbRestoreResult,
   describeRunosIndexedDbSaveResult,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
+  exportRunosIndexedDbDemoBackupText,
   getRunosRunLogsOrEmpty,
   isRunosDemoSettings,
   loadRunosDemoFromIndexedDb,
   loadRunosDemoBackupData,
+  restoreRunosIndexedDbDemoBackupText,
   restoreRunosDemoBackupText,
   saveRunosDemoToIndexedDb,
   writeRunosDemoCorruptJson
@@ -83,6 +87,11 @@ app.innerHTML = `
       <div class="actions">
         <button type="button" data-action="idb-save">IndexedDBへ保存</button>
         <button type="button" data-action="idb-load">IndexedDBから読込</button>
+        <button type="button" data-action="idb-export-backup">IndexedDBバックアップ書き出し</button>
+        <label class="file-button">
+          IndexedDBバックアップ読み込み
+          <input id="idb-backup-import" class="backup-file-input" type="file" accept="application/json,.json" />
+        </label>
       </div>
       <pre id="idb-result" aria-live="polite">未実行。保存先: IndexedDB opt-in demo / 件数: 未確認</pre>
     </section>
@@ -156,6 +165,7 @@ const paceMinutesInput = document.querySelector<HTMLInputElement>("#pace-minutes
 const paceSecondsInput = document.querySelector<HTMLInputElement>("#pace-seconds");
 const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
 const backupImportInput = document.querySelector<HTMLInputElement>("#backup-import");
+const indexedDbBackupImportInput = document.querySelector<HTMLInputElement>("#idb-backup-import");
 const runLogForm = document.querySelector<HTMLFormElement>("#run-log-form");
 const runLogList = document.querySelector<HTMLDivElement>("#run-log-list");
 const runDateInput = document.querySelector<HTMLInputElement>("#run-date");
@@ -209,6 +219,39 @@ document.querySelector<HTMLButtonElement>("[data-action='idb-load']")?.addEventL
     .catch((error: unknown) => {
       console.warn("[runos-pwa] IndexedDB opt-in load failed", error);
       updateIndexedDbOutput("IndexedDBからの読込に失敗しました。consoleを確認してください。");
+    });
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='idb-export-backup']")?.addEventListener("click", () => {
+  exportRunosIndexedDbDemoBackupText(indexedDbAdapter)
+    .then((result) => {
+      if (result.status === "exported") {
+        downloadTextFile(result.fileName, result.backupText);
+      }
+      updateIndexedDbOutput(describeRunosIndexedDbBackupExportResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[runos-pwa] IndexedDB backup export failed", error);
+      updateIndexedDbOutput("IndexedDBバックアップ書き出しに失敗しました。consoleを確認してください。");
+    });
+});
+
+indexedDbBackupImportInput?.addEventListener("change", () => {
+  const file = indexedDbBackupImportInput.files?.[0];
+  if (!file) return;
+
+  file
+    .text()
+    .then((text) => restoreRunosIndexedDbDemoBackupText(indexedDbAdapter, text))
+    .then((result) => {
+      updateIndexedDbOutput(describeRunosIndexedDbRestoreResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[runos-pwa] IndexedDB backup import failed", error);
+      updateIndexedDbOutput("IndexedDBバックアップ読み込みに失敗しました。consoleを確認してください。");
+    })
+    .finally(() => {
+      indexedDbBackupImportInput.value = "";
     });
 });
 

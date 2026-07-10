@@ -10,15 +10,19 @@ import {
   createWanokuIndexedDbAdapter,
   createWanokuStorageAdapter,
   deleteWanokuCatchLog,
+  describeWanokuIndexedDbBackupExportResult,
   describeWanokuIndexedDbLoadResult,
+  describeWanokuIndexedDbRestoreResult,
   describeWanokuIndexedDbSaveResult,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
+  exportWanokuIndexedDbDemoBackupText,
   getWanokuCatchLogsOrEmpty,
   isWanokuDemoSettings,
   loadWanokuDemoFromIndexedDb,
   loadWanokuDemoBackupData,
+  restoreWanokuIndexedDbDemoBackupText,
   restoreWanokuDemoBackupText,
   saveWanokuDemoToIndexedDb,
   writeWanokuDemoCorruptJson
@@ -82,6 +86,11 @@ app.innerHTML = `
       <div class="actions">
         <button type="button" data-action="idb-save">IndexedDBへ保存</button>
         <button type="button" data-action="idb-load">IndexedDBから読込</button>
+        <button type="button" data-action="idb-export-backup">IndexedDBバックアップ書き出し</button>
+        <label class="file-button">
+          IndexedDBバックアップ読み込み
+          <input id="idb-backup-import" class="backup-file-input" type="file" accept="application/json,.json" />
+        </label>
       </div>
       <pre id="idb-result" aria-live="polite">未実行。保存先: IndexedDB opt-in demo / 件数: 未確認</pre>
     </section>
@@ -150,6 +159,7 @@ const windAngleAInput = document.querySelector<HTMLInputElement>("#wind-angle-a"
 const windAngleBInput = document.querySelector<HTMLInputElement>("#wind-angle-b");
 const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
 const backupImportInput = document.querySelector<HTMLInputElement>("#backup-import");
+const indexedDbBackupImportInput = document.querySelector<HTMLInputElement>("#idb-backup-import");
 const catchLogForm = document.querySelector<HTMLFormElement>("#catch-log-form");
 const catchLogList = document.querySelector<HTMLDivElement>("#catch-log-list");
 const catchDateInput = document.querySelector<HTMLInputElement>("#catch-date");
@@ -203,6 +213,39 @@ document.querySelector<HTMLButtonElement>("[data-action='idb-load']")?.addEventL
     .catch((error: unknown) => {
       console.warn("[wanoku-pwa] IndexedDB opt-in load failed", error);
       updateIndexedDbOutput("IndexedDBからの読込に失敗しました。consoleを確認してください。");
+    });
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='idb-export-backup']")?.addEventListener("click", () => {
+  exportWanokuIndexedDbDemoBackupText(indexedDbAdapter)
+    .then((result) => {
+      if (result.status === "exported") {
+        downloadTextFile(result.fileName, result.backupText);
+      }
+      updateIndexedDbOutput(describeWanokuIndexedDbBackupExportResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[wanoku-pwa] IndexedDB backup export failed", error);
+      updateIndexedDbOutput("IndexedDBバックアップ書き出しに失敗しました。consoleを確認してください。");
+    });
+});
+
+indexedDbBackupImportInput?.addEventListener("change", () => {
+  const file = indexedDbBackupImportInput.files?.[0];
+  if (!file) return;
+
+  file
+    .text()
+    .then((text) => restoreWanokuIndexedDbDemoBackupText(indexedDbAdapter, text))
+    .then((result) => {
+      updateIndexedDbOutput(describeWanokuIndexedDbRestoreResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[wanoku-pwa] IndexedDB backup import failed", error);
+      updateIndexedDbOutput("IndexedDBバックアップ読み込みに失敗しました。consoleを確認してください。");
+    })
+    .finally(() => {
+      indexedDbBackupImportInput.value = "";
     });
 });
 

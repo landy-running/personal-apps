@@ -2,22 +2,31 @@ import { describe, expect, it } from "vitest";
 import {
   RUNOS_DEMO_RUN_LOGS_KEY,
   RUNOS_DEMO_SETTINGS_KEY,
+  RUNOS_DEMO_BACKUP_TYPE,
+  RUNOS_INDEXEDDB_BACKUP_SCHEMA_VERSION,
+  RUNOS_INDEXEDDB_BACKUP_TYPE,
   addRunosRunLog,
+  createRunosIndexedDbDemoBackupText,
   createRunosDemoBackupText,
   createRunosDemoBackupFileName,
   createRunosDemoSettings,
   createRunosStorageAdapter,
   deleteRunosRunLog,
+  describeRunosIndexedDbBackupExportResult,
   describeRunosIndexedDbLoadResult,
+  describeRunosIndexedDbRestoreResult,
   describeRunosIndexedDbSaveResult,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
+  exportRunosIndexedDbDemoBackupText,
   getRunosRunLogsOrEmpty,
   isRunosDemoSettings,
   loadRunosDemoFromIndexedDb,
   loadRunosDemoBackupData,
+  parseRunosIndexedDbDemoBackupText,
   parseRunosDemoBackupText,
+  restoreRunosIndexedDbDemoBackupText,
   restoreRunosDemoBackupText,
   saveRunosDemoToIndexedDb,
   saveRunosRunLogs,
@@ -237,5 +246,65 @@ describe("RunOS PWA storage demo", () => {
     expect(describeRunosIndexedDbSaveResult(saved)).toContain("保存先: IndexedDB");
     expect(describeRunosIndexedDbLoadResult(loaded)).toContain("件数: runLogs=1");
     expect(storage.getItem("meridian.v1")).toBeNull();
+  });
+
+  it("exports and restores IndexedDB opt-in backup JSON with a distinct backupType", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createRunosStorageAdapter(storage);
+    const sourceIndexedDb = new MemoryAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+    const restoreIndexedDb = new MemoryAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+
+    addRunosRunLog(localAdapter, {
+      id: "run-idb-backup-1",
+      date: "2026-07-10",
+      distanceKm: 8,
+      durationSec: 2400,
+      note: "idb backup"
+    });
+    await saveRunosDemoToIndexedDb(sourceIndexedDb, localAdapter, new Date("2026-07-10T00:00:00.000Z"));
+
+    const exported = await exportRunosIndexedDbDemoBackupText(sourceIndexedDb, new Date("2026-07-10T00:02:00.000Z"));
+    expect(exported.status).toBe("exported");
+    if (exported.status !== "exported") throw new Error("IndexedDB backup export failed in test.");
+    expect(exported.backup.backupType).toBe(RUNOS_INDEXEDDB_BACKUP_TYPE);
+    expect(exported.backup.backupType).not.toBe(RUNOS_DEMO_BACKUP_TYPE);
+    expect(exported.backup.schemaVersion).toBe(RUNOS_INDEXEDDB_BACKUP_SCHEMA_VERSION);
+    expect(describeRunosIndexedDbBackupExportResult(exported)).toContain("runLogs=1");
+
+    const parsed = parseRunosIndexedDbDemoBackupText(exported.backupText);
+    expect(parsed.ok).toBe(true);
+
+    const restored = await restoreRunosIndexedDbDemoBackupText(restoreIndexedDb, exported.backupText);
+    const loaded = await loadRunosDemoFromIndexedDb(restoreIndexedDb);
+
+    expect(restored.status).toBe("restored");
+    expect(describeRunosIndexedDbRestoreResult(restored)).toContain("runLogs=1");
+    expect(loaded.runLogCount).toBe(1);
+  });
+
+  it("rejects localStorage backup and checksum mismatch for IndexedDB restore", async () => {
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+    const localBackup = createRunosDemoBackupText(
+      {
+        settings: createRunosDemoSettings(new Date("2026-07-10T00:00:00.000Z")),
+        runLogs: []
+      },
+      "2026-07-10T00:00:00.000Z"
+    );
+    const localBackupResult = await restoreRunosIndexedDbDemoBackupText(indexedDbAdapter, localBackup);
+    expect(localBackupResult).toMatchObject({ status: "rejected", reason: "backup-type-mismatch" });
+
+    const idbBackup = createRunosIndexedDbDemoBackupText(
+      {
+        settings: createRunosDemoSettings(new Date("2026-07-10T00:00:00.000Z")),
+        runLogs: []
+      },
+      "2026-07-10T00:00:00.000Z"
+    );
+    const badChecksumJson = JSON.parse(idbBackup) as { checksum: { sum: number } };
+    badChecksumJson.checksum.sum += 1;
+    const badChecksum = JSON.stringify(badChecksumJson);
+    const checksumResult = await restoreRunosIndexedDbDemoBackupText(indexedDbAdapter, badChecksum);
+    expect(checksumResult).toMatchObject({ status: "rejected", reason: "checksum-mismatch" });
   });
 });

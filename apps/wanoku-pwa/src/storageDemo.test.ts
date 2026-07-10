@@ -2,20 +2,29 @@ import { describe, expect, it } from "vitest";
 import {
   WANOKU_DEMO_CATCH_LOGS_KEY,
   WANOKU_DEMO_SETTINGS_KEY,
+  WANOKU_DEMO_BACKUP_TYPE,
+  WANOKU_INDEXEDDB_BACKUP_SCHEMA_VERSION,
+  WANOKU_INDEXEDDB_BACKUP_TYPE,
   addWanokuCatchLog,
   createWanokuDemoBackupText,
   createWanokuDemoSettings,
+  createWanokuIndexedDbDemoBackupText,
   createWanokuStorageAdapter,
   deleteWanokuCatchLog,
+  describeWanokuIndexedDbBackupExportResult,
   describeWanokuIndexedDbLoadResult,
+  describeWanokuIndexedDbRestoreResult,
   describeWanokuIndexedDbSaveResult,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
+  exportWanokuIndexedDbDemoBackupText,
   getWanokuCatchLogsOrEmpty,
   isWanokuDemoSettings,
   loadWanokuDemoFromIndexedDb,
   loadWanokuDemoBackupData,
+  parseWanokuIndexedDbDemoBackupText,
+  restoreWanokuIndexedDbDemoBackupText,
   restoreWanokuDemoBackupText,
   saveWanokuDemoToIndexedDb,
   writeWanokuDemoCorruptJson
@@ -228,5 +237,66 @@ describe("wanoku-navi PWA storage demo", () => {
     expect(describeWanokuIndexedDbLoadResult(loaded)).toContain("件数: catchLogs=1");
     expect(storage.getItem("settings")).toBeNull();
     expect(storage.getItem("logs")).toBeNull();
+  });
+
+  it("exports and restores IndexedDB opt-in backup JSON with a distinct backupType", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createWanokuStorageAdapter(storage);
+    const sourceIndexedDb = new MemoryAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+    const restoreIndexedDb = new MemoryAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+
+    addWanokuCatchLog(localAdapter, {
+      id: "catch-idb-backup-1",
+      date: "2026-07-10",
+      spotName: "豊洲",
+      targetFish: "シーバス",
+      result: "1匹",
+      note: "idb backup"
+    });
+    await saveWanokuDemoToIndexedDb(sourceIndexedDb, localAdapter, new Date("2026-07-10T00:00:00.000Z"));
+
+    const exported = await exportWanokuIndexedDbDemoBackupText(sourceIndexedDb, new Date("2026-07-10T00:02:00.000Z"));
+    expect(exported.status).toBe("exported");
+    if (exported.status !== "exported") throw new Error("IndexedDB backup export failed in test.");
+    expect(exported.backup.backupType).toBe(WANOKU_INDEXEDDB_BACKUP_TYPE);
+    expect(exported.backup.backupType).not.toBe(WANOKU_DEMO_BACKUP_TYPE);
+    expect(exported.backup.schemaVersion).toBe(WANOKU_INDEXEDDB_BACKUP_SCHEMA_VERSION);
+    expect(describeWanokuIndexedDbBackupExportResult(exported)).toContain("catchLogs=1");
+
+    const parsed = parseWanokuIndexedDbDemoBackupText(exported.backupText);
+    expect(parsed.ok).toBe(true);
+
+    const restored = await restoreWanokuIndexedDbDemoBackupText(restoreIndexedDb, exported.backupText);
+    const loaded = await loadWanokuDemoFromIndexedDb(restoreIndexedDb);
+
+    expect(restored.status).toBe("restored");
+    expect(describeWanokuIndexedDbRestoreResult(restored)).toContain("catchLogs=1");
+    expect(loaded.catchLogCount).toBe(1);
+  });
+
+  it("rejects localStorage backup and checksum mismatch for IndexedDB restore", async () => {
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+    const localBackup = createWanokuDemoBackupText(
+      {
+        settings: createWanokuDemoSettings(new Date("2026-07-10T00:00:00.000Z")),
+        catchLogs: []
+      },
+      "2026-07-10T00:00:00.000Z"
+    );
+    const localBackupResult = await restoreWanokuIndexedDbDemoBackupText(indexedDbAdapter, localBackup);
+    expect(localBackupResult).toMatchObject({ status: "rejected", reason: "backup-type-mismatch" });
+
+    const idbBackup = createWanokuIndexedDbDemoBackupText(
+      {
+        settings: createWanokuDemoSettings(new Date("2026-07-10T00:00:00.000Z")),
+        catchLogs: []
+      },
+      "2026-07-10T00:00:00.000Z"
+    );
+    const badChecksumJson = JSON.parse(idbBackup) as { checksum: { sum: number } };
+    badChecksumJson.checksum.sum += 1;
+    const badChecksum = JSON.stringify(badChecksumJson);
+    const checksumResult = await restoreWanokuIndexedDbDemoBackupText(indexedDbAdapter, badChecksum);
+    expect(checksumResult).toMatchObject({ status: "rejected", reason: "checksum-mismatch" });
   });
 });
