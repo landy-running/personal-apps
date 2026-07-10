@@ -38,6 +38,10 @@ app.innerHTML = `
         <dt>Storage</dt>
         <dd>demo key: ${WANOKU_DEMO_SETTINGS_KEY}</dd>
       </div>
+      <div>
+        <dt>Service Worker</dt>
+        <dd id="sw-status">確認中...</dd>
+      </div>
     </dl>
     <section class="demo-card" aria-labelledby="storage-demo-heading">
       <h2 id="storage-demo-heading">保存デモ</h2>
@@ -75,6 +79,7 @@ const output = document.querySelector<HTMLPreElement>("#storage-result");
 const windOutput = document.querySelector<HTMLPreElement>("#wind-result");
 const windAngleAInput = document.querySelector<HTMLInputElement>("#wind-angle-a");
 const windAngleBInput = document.querySelector<HTMLInputElement>("#wind-angle-b");
+const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -118,7 +123,12 @@ windAngleAInput?.addEventListener("input", updateWindDemo);
 windAngleBInput?.addEventListener("input", updateWindDemo);
 updateWindDemo();
 
-registerServiceWorker();
+registerServiceWorker((status) => {
+  if (serviceWorkerStatus) {
+    serviceWorkerStatus.textContent = status.message;
+    serviceWorkerStatus.dataset.state = status.state;
+  }
+});
 
 function getBrowserLocalStorage(): Storage | undefined {
   try {

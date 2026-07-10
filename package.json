@@ -8,6 +8,8 @@
     "build": "npm run typecheck && npm run build:runos && npm run build:wanoku",
     "build:runos": "vite build --config apps/runos-pwa/vite.config.ts",
     "build:wanoku": "vite build --config apps/wanoku-pwa/vite.config.ts",
+    "preview:runos": "vite preview --config apps/runos-pwa/vite.config.ts",
+    "preview:wanoku": "vite preview --config apps/wanoku-pwa/vite.config.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
@@ -18,4 +20,3 @@
     "vitest": "^1.0.0"
   }
 }
-

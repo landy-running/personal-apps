@@ -39,6 +39,10 @@ app.innerHTML = `
         <dt>Storage</dt>
         <dd>demo key: ${RUNOS_DEMO_SETTINGS_KEY}</dd>
       </div>
+      <div>
+        <dt>Service Worker</dt>
+        <dd id="sw-status">確認中...</dd>
+      </div>
     </dl>
     <section class="demo-card" aria-labelledby="storage-demo-heading">
       <h2 id="storage-demo-heading">保存デモ</h2>
@@ -81,6 +85,7 @@ const paceOutput = document.querySelector<HTMLPreElement>("#pace-result");
 const paceDistanceInput = document.querySelector<HTMLInputElement>("#pace-distance");
 const paceMinutesInput = document.querySelector<HTMLInputElement>("#pace-minutes");
 const paceSecondsInput = document.querySelector<HTMLInputElement>("#pace-seconds");
+const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -129,7 +134,12 @@ paceMinutesInput?.addEventListener("input", updatePaceDemo);
 paceSecondsInput?.addEventListener("input", updatePaceDemo);
 updatePaceDemo();
 
-registerServiceWorker();
+registerServiceWorker((status) => {
+  if (serviceWorkerStatus) {
+    serviceWorkerStatus.textContent = status.message;
+    serviceWorkerStatus.dataset.state = status.state;
+  }
+});
 
 function getBrowserLocalStorage(): Storage | undefined {
   try {

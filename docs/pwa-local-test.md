@@ -18,41 +18,89 @@ npm test
 npm run build
 ```
 
-## 3. RunOS PWA起動
+## 3. 開発サーバー
+
+RunOS:
 
 ```bash
 npm run dev:runos
 ```
 
-ブラウザで表示されたローカルURLを開き、次を確認します。
-
-- 保存デモが `runos-pwa.demo.settings` だけを使う
-- 破損JSON注入で `<key>.corrupt.<timestamp>` が表示される
-- ペース計算デモで距離、分、秒から平均ペースが表示される
-
-## 4. wanoku-navi PWA起動
+wanoku-navi:
 
 ```bash
 npm run dev:wanoku
 ```
 
-ブラウザで表示されたローカルURLを開き、次を確認します。
+開発サーバーでは、過剰キャッシュを避けるためService Worker登録をスキップします。画面のService Worker欄に「開発環境では登録をスキップ」と表示されることを確認します。
 
-- 保存デモが `wanoku-pwa.demo.settings` だけを使う
-- 破損JSON注入で `<key>.corrupt.<timestamp>` が表示される
-- 風向差デモで2つの角度から `angleDiff` 結果が表示される
+## 4. previewサーバー
+
+先に `npm run build` を実行してから確認します。
+
+RunOS:
+
+```bash
+npm run preview:runos
+```
+
+wanoku-navi:
+
+```bash
+npm run preview:wanoku
+```
+
+previewではビルド済み成果物を配信するため、Service Worker登録確認に使います。
 
 ## 5. PCブラウザ確認
 
-- DevTools consoleに保存サイズログが出ること
-- リロード後もデモ保存が読めること
-- 破損検知後に保存停止表示へ進めること
-- `npm run build` の `dist/runos-pwa` と `dist/wanoku-pwa` が生成されること
+ChromeまたはEdgeで次を確認します。
 
-## 6. iPhoneホーム画面確認前の注意点
+- 保存デモが `runos-pwa.demo.settings` / `wanoku-pwa.demo.settings` だけを使う
+- 破損JSON注入で `<key>.corrupt.<timestamp>` が表示される
+- RunOSのペース計算デモで距離、分、秒から平均ペースが表示される
+- wanoku-naviの風向差デモで2つの角度から `angleDiff` 結果が表示される
+- DevTools consoleに保存サイズログとService Worker登録成功/失敗ログが出る
+
+## 6. Applicationタブ確認
+
+Chrome / Edge DevTools の Application タブで次を確認します。
+
+- Manifest
+  - `name`
+  - `short_name`
+  - `start_url`
+  - `scope`
+  - `display`
+  - `theme_color`
+  - `background_color`
+  - `icons`
+- Service Workers
+  - preview時に `sw.js` が登録される
+  - dev時に古い登録が残っていない
+- Storage
+  - demoキーだけが作成される
+  - legacyの `meridian.v1` やwanoku Storeキー群へ接続していない
+
+## 7. iPhoneホーム画面確認前の注意点
 
 - Service Worker確認にはHTTPSまたはlocalhost相当の配信が必要
-- ホーム画面追加前に、manifest、icon、scope、start_urlを確認する
+- ホーム画面追加前にmanifest、icon、scope、start_urlを確認する
 - 通常Safariタブとホーム画面起動で保存領域・画面高さが異なる可能性がある
 - localStorageは消える可能性があるため、実データ接続前にバックアップ導線を確認する
 - iPhone実機での確認前に、legacy HTMLの実データキーへ接続しない
+- 正式アイコンは未作成で、現在はSVGプレースホルダーである
+
+## 8. デプロイ候補
+
+- Cloudflare Pages
+  - wanoku-naviで将来Worker連携やAPIキー保護を行うなら第一候補
+  - 現時点ではWorker未実装のため、静的PWAとして先に検証する
+- Vercel
+  - preview URLでPWAシェルを確認しやすい
+  - UI移行の途中確認に向く
+- GitHub Pages
+  - 静的PWAとして最も単純
+  - サブパス配信時はmanifestの `start_url` / `scope` とVite `base` を必ず確認する
+
+現構成で最初に試すなら、静的確認はGitHub PagesまたはVercel、将来のwanoku Worker連携を見据えるならCloudflare Pagesが扱いやすいです。

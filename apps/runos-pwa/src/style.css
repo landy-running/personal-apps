@@ -68,6 +68,20 @@ dd {
   font-weight: 700;
 }
 
+#sw-status {
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+#sw-status[data-state="registered"] {
+  color: #86efac;
+}
+
+#sw-status[data-state="failed"],
+#sw-status[data-state="unsupported"] {
+  color: #fca5a5;
+}
+
 .demo-card {
   max-width: 760px;
   padding: 18px;
