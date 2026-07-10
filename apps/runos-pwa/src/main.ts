@@ -8,15 +8,20 @@ import {
   createRunosDemoBackupFileName,
   createRunosDemoBackupText,
   createRunosDemoSettings,
+  createRunosIndexedDbAdapter,
   createRunosStorageAdapter,
   deleteRunosRunLog,
+  describeRunosIndexedDbLoadResult,
+  describeRunosIndexedDbSaveResult,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
   getRunosRunLogsOrEmpty,
   isRunosDemoSettings,
+  loadRunosDemoFromIndexedDb,
   loadRunosDemoBackupData,
   restoreRunosDemoBackupText,
+  saveRunosDemoToIndexedDb,
   writeRunosDemoCorruptJson
 } from "./storageDemo";
 
@@ -31,6 +36,7 @@ if (!app) {
 const samplePace = averagePaceSecondsPerKilometer(10, 45 * 60);
 const browserStorage = getBrowserLocalStorage();
 const storageAdapter = createRunosStorageAdapter(browserStorage);
+const indexedDbAdapter = createRunosIndexedDbAdapter();
 const todayIso = new Date().toISOString().slice(0, 10);
 
 app.innerHTML = `
@@ -69,7 +75,16 @@ app.innerHTML = `
         </label>
         <button type="button" data-action="corrupt">破損JSONを注入して検知</button>
       </div>
-      <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
+      <pre id="storage-result" aria-live="polite">localStorage demoは未実行です。IndexedDBは下のopt-in demoから試せます。</pre>
+      <h3>IndexedDB opt-in demo</h3>
+      <p>
+        既定保存先は変更せず、現在のdemo settings / runLogsをIndexedDBへ手動コピーして確認します。
+      </p>
+      <div class="actions">
+        <button type="button" data-action="idb-save">IndexedDBへ保存</button>
+        <button type="button" data-action="idb-load">IndexedDBから読込</button>
+      </div>
+      <pre id="idb-result" aria-live="polite">未実行。保存先: IndexedDB opt-in demo / 件数: 未確認</pre>
     </section>
     <section class="demo-card" aria-labelledby="run-log-heading">
       <h2 id="run-log-heading">軽量ラン記録</h2>
@@ -134,6 +149,7 @@ app.innerHTML = `
 `;
 
 const output = document.querySelector<HTMLPreElement>("#storage-result");
+const indexedDbOutput = document.querySelector<HTMLPreElement>("#idb-result");
 const paceOutput = document.querySelector<HTMLPreElement>("#pace-result");
 const paceDistanceInput = document.querySelector<HTMLInputElement>("#pace-distance");
 const paceMinutesInput = document.querySelector<HTMLInputElement>("#pace-minutes");
@@ -153,6 +169,10 @@ function updateOutput(message: string): void {
   if (output) output.textContent = message;
 }
 
+function updateIndexedDbOutput(message: string): void {
+  if (indexedDbOutput) indexedDbOutput.textContent = message;
+}
+
 document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListener("click", () => {
   const prepared = storageAdapter.prepareJson(createRunosDemoSettings());
   if (prepared.ok) {
@@ -166,6 +186,30 @@ document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListe
 document.querySelector<HTMLButtonElement>("[data-action='load']")?.addEventListener("click", () => {
   const result = storageAdapter.loadJson(RUNOS_DEMO_SETTINGS_KEY, isRunosDemoSettings);
   updateOutput(describeRunosLoadResult(result, storageAdapter.mode));
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='idb-save']")?.addEventListener("click", () => {
+  saveRunosDemoToIndexedDb(indexedDbAdapter, storageAdapter)
+    .then((result) => {
+      console.info("[runos-pwa] IndexedDB opt-in save result", result);
+      updateIndexedDbOutput(describeRunosIndexedDbSaveResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[runos-pwa] IndexedDB opt-in save failed", error);
+      updateIndexedDbOutput("IndexedDBへの保存に失敗しました。consoleを確認してください。");
+    });
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='idb-load']")?.addEventListener("click", () => {
+  loadRunosDemoFromIndexedDb(indexedDbAdapter)
+    .then((result) => {
+      console.info("[runos-pwa] IndexedDB opt-in load result", result);
+      updateIndexedDbOutput(describeRunosIndexedDbLoadResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[runos-pwa] IndexedDB opt-in load failed", error);
+      updateIndexedDbOutput("IndexedDBからの読込に失敗しました。consoleを確認してください。");
+    });
 });
 
 document.querySelector<HTMLButtonElement>("[data-action='export-backup']")?.addEventListener("click", () => {

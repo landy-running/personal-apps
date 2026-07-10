@@ -8,18 +8,22 @@ import {
   createRunosDemoSettings,
   createRunosStorageAdapter,
   deleteRunosRunLog,
+  describeRunosIndexedDbLoadResult,
+  describeRunosIndexedDbSaveResult,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
   getRunosRunLogsOrEmpty,
   isRunosDemoSettings,
+  loadRunosDemoFromIndexedDb,
   loadRunosDemoBackupData,
   parseRunosDemoBackupText,
   restoreRunosDemoBackupText,
+  saveRunosDemoToIndexedDb,
   saveRunosRunLogs,
   writeRunosDemoCorruptJson
 } from "./storageDemo";
-import type { LocalStorageLike } from "@personal/storage";
+import type { JsonValidator, LoadJsonResult, LocalStorageLike, SaveResult, StorageMode } from "@personal/storage";
 
 class MemoryStorage implements LocalStorageLike {
   readonly values = new Map<string, string>();
@@ -30,6 +34,53 @@ class MemoryStorage implements LocalStorageLike {
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+}
+
+class MemoryAsyncJsonAdapter<Key extends string> {
+  readonly values = new Map<Key, string>();
+  mode: StorageMode = "local";
+
+  async saveJson(key: Key, value: unknown): Promise<SaveResult<Key>> {
+    const json = JSON.stringify(value);
+    this.values.set(key, json);
+
+    return {
+      status: "success",
+      mode: "local",
+      key,
+      bytes: new TextEncoder().encode(json).byteLength
+    };
+  }
+
+  async loadJson<Value = unknown>(key: Key, validator?: JsonValidator<Value>): Promise<LoadJsonResult<Key, Value>> {
+    const rawValue = this.values.get(key);
+    if (rawValue === undefined) {
+      return {
+        status: "missing",
+        mode: "local",
+        key
+      };
+    }
+
+    const value = JSON.parse(rawValue) as unknown;
+    if (validator && !validator(value)) {
+      return {
+        status: "failed",
+        mode: "local",
+        key,
+        reason: "read-failed",
+        error: new Error("validation failed")
+      };
+    }
+
+    return {
+      status: "success",
+      mode: "local",
+      key,
+      value: value as Value,
+      bytes: new TextEncoder().encode(rawValue).byteLength
+    };
   }
 }
 
@@ -158,5 +209,33 @@ describe("RunOS PWA storage demo", () => {
 
     expect(data.settings.app).toBe("runos-pwa-demo");
     expect(data.runLogs).toHaveLength(1);
+  });
+
+  it("copies demo settings and run logs to the IndexedDB opt-in adapter without touching legacy keys", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createRunosStorageAdapter(storage);
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+
+    const added = addRunosRunLog(localAdapter, {
+      id: "run-idb-1",
+      date: "2026-07-10",
+      distanceKm: 6,
+      durationSec: 1800,
+      note: "idb opt-in"
+    });
+    expect(added.ok).toBe(true);
+
+    const saved = await saveRunosDemoToIndexedDb(indexedDbAdapter, localAdapter, new Date("2026-07-10T00:00:00.000Z"));
+    const loaded = await loadRunosDemoFromIndexedDb(indexedDbAdapter, new Date("2026-07-10T00:01:00.000Z"));
+
+    expect(saved.settingsResult.status).toBe("success");
+    expect(saved.runLogsResult.status).toBe("success");
+    expect(saved.runLogCount).toBe(1);
+    expect(loaded.settingsResult.status).toBe("success");
+    expect(loaded.runLogsResult.status).toBe("success");
+    expect(loaded.runLogCount).toBe(1);
+    expect(describeRunosIndexedDbSaveResult(saved)).toContain("保存先: IndexedDB");
+    expect(describeRunosIndexedDbLoadResult(loaded)).toContain("件数: runLogs=1");
+    expect(storage.getItem("meridian.v1")).toBeNull();
   });
 });

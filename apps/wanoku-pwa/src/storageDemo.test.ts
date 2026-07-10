@@ -7,16 +7,20 @@ import {
   createWanokuDemoSettings,
   createWanokuStorageAdapter,
   deleteWanokuCatchLog,
+  describeWanokuIndexedDbLoadResult,
+  describeWanokuIndexedDbSaveResult,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
   getWanokuCatchLogsOrEmpty,
   isWanokuDemoSettings,
+  loadWanokuDemoFromIndexedDb,
   loadWanokuDemoBackupData,
   restoreWanokuDemoBackupText,
+  saveWanokuDemoToIndexedDb,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
-import type { LocalStorageLike } from "@personal/storage";
+import type { JsonValidator, LoadJsonResult, LocalStorageLike, SaveResult, StorageMode } from "@personal/storage";
 
 class MemoryStorage implements LocalStorageLike {
   readonly values = new Map<string, string>();
@@ -27,6 +31,53 @@ class MemoryStorage implements LocalStorageLike {
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+}
+
+class MemoryAsyncJsonAdapter<Key extends string> {
+  readonly values = new Map<Key, string>();
+  mode: StorageMode = "local";
+
+  async saveJson(key: Key, value: unknown): Promise<SaveResult<Key>> {
+    const json = JSON.stringify(value);
+    this.values.set(key, json);
+
+    return {
+      status: "success",
+      mode: "local",
+      key,
+      bytes: new TextEncoder().encode(json).byteLength
+    };
+  }
+
+  async loadJson<Value = unknown>(key: Key, validator?: JsonValidator<Value>): Promise<LoadJsonResult<Key, Value>> {
+    const rawValue = this.values.get(key);
+    if (rawValue === undefined) {
+      return {
+        status: "missing",
+        mode: "local",
+        key
+      };
+    }
+
+    const value = JSON.parse(rawValue) as unknown;
+    if (validator && !validator(value)) {
+      return {
+        status: "failed",
+        mode: "local",
+        key,
+        reason: "read-failed",
+        error: new Error("validation failed")
+      };
+    }
+
+    return {
+      status: "success",
+      mode: "local",
+      key,
+      value: value as Value,
+      bytes: new TextEncoder().encode(rawValue).byteLength
+    };
   }
 }
 
@@ -147,5 +198,35 @@ describe("wanoku-navi PWA storage demo", () => {
 
     expect(data.settings.app).toBe("wanoku-pwa-demo");
     expect(data.catchLogs).toHaveLength(1);
+  });
+
+  it("copies demo settings and catch logs to the IndexedDB opt-in adapter without touching legacy Store keys", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createWanokuStorageAdapter(storage);
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+
+    const added = addWanokuCatchLog(localAdapter, {
+      id: "catch-idb-1",
+      date: "2026-07-10",
+      spotName: "豊洲",
+      targetFish: "シーバス",
+      result: "1匹",
+      note: "idb opt-in"
+    });
+    expect(added.ok).toBe(true);
+
+    const saved = await saveWanokuDemoToIndexedDb(indexedDbAdapter, localAdapter, new Date("2026-07-10T00:00:00.000Z"));
+    const loaded = await loadWanokuDemoFromIndexedDb(indexedDbAdapter, new Date("2026-07-10T00:01:00.000Z"));
+
+    expect(saved.settingsResult.status).toBe("success");
+    expect(saved.catchLogsResult.status).toBe("success");
+    expect(saved.catchLogCount).toBe(1);
+    expect(loaded.settingsResult.status).toBe("success");
+    expect(loaded.catchLogsResult.status).toBe("success");
+    expect(loaded.catchLogCount).toBe(1);
+    expect(describeWanokuIndexedDbSaveResult(saved)).toContain("保存先: IndexedDB");
+    expect(describeWanokuIndexedDbLoadResult(loaded)).toContain("件数: catchLogs=1");
+    expect(storage.getItem("settings")).toBeNull();
+    expect(storage.getItem("logs")).toBeNull();
   });
 });

@@ -7,7 +7,9 @@ import {
 import {
   type BackupJson,
   LocalStorageAdapter,
+  IndexedDbJsonAdapter,
   type LoadJsonResult,
+  type IndexedDbFactoryLike,
   type LocalStorageLike,
   type ParseBackupJsonResult,
   type SaveResult,
@@ -22,6 +24,9 @@ export const RUNOS_DEMO_RUN_LOGS_KEY = "runos-pwa.demo.runLogs" as const;
 export const RUNOS_DEMO_CORRUPT_JSON = "{broken-runos-demo-json";
 export const RUNOS_DEMO_BACKUP_TYPE = "runos-pwa-demo-data" as const;
 export const RUNOS_DEMO_BACKUP_SCHEMA_VERSION = "runos-pwa-demo-data-v1";
+export const RUNOS_INDEXEDDB_DB_NAME = "runos-pwa" as const;
+export const RUNOS_INDEXEDDB_VERSION = 1;
+export const RUNOS_INDEXEDDB_STORE_NAME = "demo-key-value" as const;
 
 export type RunosDemoStorageKey = typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY;
 
@@ -37,6 +42,24 @@ export type RunosDemoBackupData = {
   runLogs: LightweightRunLog[];
 };
 
+export type RunosIndexedDbDemoSaveResult = {
+  dbName: typeof RUNOS_INDEXEDDB_DB_NAME;
+  storeName: typeof RUNOS_INDEXEDDB_STORE_NAME;
+  savedAtIso: string;
+  settingsResult: SaveResult<RunosDemoStorageKey>;
+  runLogsResult: SaveResult<RunosDemoStorageKey>;
+  runLogCount: number;
+};
+
+export type RunosIndexedDbDemoLoadResult = {
+  dbName: typeof RUNOS_INDEXEDDB_DB_NAME;
+  storeName: typeof RUNOS_INDEXEDDB_STORE_NAME;
+  loadedAtIso: string;
+  settingsResult: LoadJsonResult<RunosDemoStorageKey, RunosDemoSettings>;
+  runLogsResult: LoadJsonResult<RunosDemoStorageKey, LightweightRunLog[]>;
+  runLogCount: number;
+};
+
 export type RunosDemoRestoreResult =
   | {
       status: "restored";
@@ -49,10 +72,25 @@ export type RunosDemoRestoreResult =
       message: string;
     };
 
+type RunosIndexedDbAdapterLike = Pick<
+  IndexedDbJsonAdapter<RunosDemoStorageKey>,
+  "mode" | "loadJson" | "saveJson"
+>;
+
 export function createRunosStorageAdapter(storage?: LocalStorageLike): LocalStorageAdapter<RunosDemoStorageKey> {
   return new LocalStorageAdapter<RunosDemoStorageKey>({
     app: "runos",
     storage
+  });
+}
+
+export function createRunosIndexedDbAdapter(indexedDB?: IndexedDbFactoryLike): IndexedDbJsonAdapter<RunosDemoStorageKey> {
+  return new IndexedDbJsonAdapter<RunosDemoStorageKey>({
+    app: "runos",
+    dbName: RUNOS_INDEXEDDB_DB_NAME,
+    version: RUNOS_INDEXEDDB_VERSION,
+    storeName: RUNOS_INDEXEDDB_STORE_NAME,
+    indexedDB
   });
 }
 
@@ -182,6 +220,42 @@ export function loadRunosDemoBackupData(adapter: LocalStorageAdapter<RunosDemoSt
   };
 }
 
+export async function saveRunosDemoToIndexedDb(
+  indexedDbAdapter: RunosIndexedDbAdapterLike,
+  localAdapter: LocalStorageAdapter<RunosDemoStorageKey>,
+  now = new Date()
+): Promise<RunosIndexedDbDemoSaveResult> {
+  const data = loadRunosDemoBackupData(localAdapter);
+  const settingsResult = await indexedDbAdapter.saveJson(RUNOS_DEMO_SETTINGS_KEY, data.settings);
+  const runLogsResult = await indexedDbAdapter.saveJson(RUNOS_DEMO_RUN_LOGS_KEY, data.runLogs);
+
+  return {
+    dbName: RUNOS_INDEXEDDB_DB_NAME,
+    storeName: RUNOS_INDEXEDDB_STORE_NAME,
+    savedAtIso: now.toISOString(),
+    settingsResult,
+    runLogsResult,
+    runLogCount: data.runLogs.length
+  };
+}
+
+export async function loadRunosDemoFromIndexedDb(
+  indexedDbAdapter: RunosIndexedDbAdapterLike,
+  now = new Date()
+): Promise<RunosIndexedDbDemoLoadResult> {
+  const settingsResult = await indexedDbAdapter.loadJson(RUNOS_DEMO_SETTINGS_KEY, isRunosDemoSettings);
+  const runLogsResult = await indexedDbAdapter.loadJson(RUNOS_DEMO_RUN_LOGS_KEY, isLightweightRunLogArray);
+
+  return {
+    dbName: RUNOS_INDEXEDDB_DB_NAME,
+    storeName: RUNOS_INDEXEDDB_STORE_NAME,
+    loadedAtIso: now.toISOString(),
+    settingsResult,
+    runLogsResult,
+    runLogCount: runLogsResult.status === "success" ? runLogsResult.value.length : 0
+  };
+}
+
 export function restoreRunosDemoBackupText(adapter: LocalStorageAdapter<RunosDemoStorageKey>, text: string): RunosDemoRestoreResult {
   const parsed = parseRunosDemoBackupText(text);
   if (!parsed.ok) {
@@ -243,6 +317,37 @@ export function describeRunosRestoreResult(result: RunosDemoRestoreResult): stri
   return `復元結果:
 settings: ${describeRunosSaveResult(result.settingsResult)}
 runLogs: ${describeRunosSaveResult(result.runLogsResult)}`;
+}
+
+export function describeRunosIndexedDbSaveResult(result: RunosIndexedDbDemoSaveResult): string {
+  return `IndexedDB保存結果:
+保存先: IndexedDB db=${result.dbName}, store=${result.storeName}
+最終保存時刻: ${result.savedAtIso}
+件数: runLogs=${result.runLogCount}
+settings: ${describeRunosSaveResult(result.settingsResult)}
+runLogs: ${describeRunosSaveResult(result.runLogsResult)}`;
+}
+
+export function describeRunosIndexedDbLoadResult(result: RunosIndexedDbDemoLoadResult): string {
+  return `IndexedDB読込結果:
+保存先: IndexedDB db=${result.dbName}, store=${result.storeName}
+最終読込時刻: ${result.loadedAtIso}
+件数: runLogs=${result.runLogCount}
+settings: ${describeRunosIndexedDbLoadLine(result.settingsResult)}
+runLogs: ${describeRunosIndexedDbLoadLine(result.runLogsResult)}`;
+}
+
+function describeRunosIndexedDbLoadLine<Value>(result: LoadJsonResult<RunosDemoStorageKey, Value>): string {
+  switch (result.status) {
+    case "success":
+      return `読込成功: key=${result.key}, mode=${result.mode}, size=${result.bytes} bytes`;
+    case "missing":
+      return `未保存: key=${result.key}, mode=${result.mode}`;
+    case "corrupt":
+      return `破損検知: key=${result.key}, backup=${result.corruptBackup.backupKey}, archive=${result.corruptBackup.archiveStatus}`;
+    case "failed":
+      return `読込失敗: key=${result.key}, mode=${result.mode}, reason=${result.reason}`;
+  }
 }
 
 function createRunosRunLogId(): string {

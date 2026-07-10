@@ -7,15 +7,20 @@ import {
   createWanokuDemoBackupFileName,
   createWanokuDemoBackupText,
   createWanokuDemoSettings,
+  createWanokuIndexedDbAdapter,
   createWanokuStorageAdapter,
   deleteWanokuCatchLog,
+  describeWanokuIndexedDbLoadResult,
+  describeWanokuIndexedDbSaveResult,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
   getWanokuCatchLogsOrEmpty,
   isWanokuDemoSettings,
+  loadWanokuDemoFromIndexedDb,
   loadWanokuDemoBackupData,
   restoreWanokuDemoBackupText,
+  saveWanokuDemoToIndexedDb,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
 import { calculateWindDemo, describeWindDemoResult } from "./windDemo";
@@ -30,6 +35,7 @@ if (!app) {
 
 const browserStorage = getBrowserLocalStorage();
 const storageAdapter = createWanokuStorageAdapter(browserStorage);
+const indexedDbAdapter = createWanokuIndexedDbAdapter();
 const todayIso = new Date().toISOString().slice(0, 10);
 
 app.innerHTML = `
@@ -68,7 +74,16 @@ app.innerHTML = `
         </label>
         <button type="button" data-action="corrupt">破損JSONを注入して検知</button>
       </div>
-      <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
+      <pre id="storage-result" aria-live="polite">localStorage demoは未実行です。IndexedDBは下のopt-in demoから試せます。</pre>
+      <h3>IndexedDB opt-in demo</h3>
+      <p>
+        既定保存先は変更せず、現在のdemo settings / catchLogsをIndexedDBへ手動コピーして確認します。
+      </p>
+      <div class="actions">
+        <button type="button" data-action="idb-save">IndexedDBへ保存</button>
+        <button type="button" data-action="idb-load">IndexedDBから読込</button>
+      </div>
+      <pre id="idb-result" aria-live="polite">未実行。保存先: IndexedDB opt-in demo / 件数: 未確認</pre>
     </section>
     <section class="demo-card" aria-labelledby="catch-log-heading">
       <h2 id="catch-log-heading">軽量釣果ログ</h2>
@@ -129,6 +144,7 @@ app.innerHTML = `
 `;
 
 const output = document.querySelector<HTMLPreElement>("#storage-result");
+const indexedDbOutput = document.querySelector<HTMLPreElement>("#idb-result");
 const windOutput = document.querySelector<HTMLPreElement>("#wind-result");
 const windAngleAInput = document.querySelector<HTMLInputElement>("#wind-angle-a");
 const windAngleBInput = document.querySelector<HTMLInputElement>("#wind-angle-b");
@@ -147,6 +163,10 @@ function updateOutput(message: string): void {
   if (output) output.textContent = message;
 }
 
+function updateIndexedDbOutput(message: string): void {
+  if (indexedDbOutput) indexedDbOutput.textContent = message;
+}
+
 document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListener("click", () => {
   const prepared = storageAdapter.prepareJson(createWanokuDemoSettings());
   if (prepared.ok) {
@@ -160,6 +180,30 @@ document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListe
 document.querySelector<HTMLButtonElement>("[data-action='load']")?.addEventListener("click", () => {
   const result = storageAdapter.loadJson(WANOKU_DEMO_SETTINGS_KEY, isWanokuDemoSettings);
   updateOutput(describeWanokuLoadResult(result, storageAdapter.mode));
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='idb-save']")?.addEventListener("click", () => {
+  saveWanokuDemoToIndexedDb(indexedDbAdapter, storageAdapter)
+    .then((result) => {
+      console.info("[wanoku-pwa] IndexedDB opt-in save result", result);
+      updateIndexedDbOutput(describeWanokuIndexedDbSaveResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[wanoku-pwa] IndexedDB opt-in save failed", error);
+      updateIndexedDbOutput("IndexedDBへの保存に失敗しました。consoleを確認してください。");
+    });
+});
+
+document.querySelector<HTMLButtonElement>("[data-action='idb-load']")?.addEventListener("click", () => {
+  loadWanokuDemoFromIndexedDb(indexedDbAdapter)
+    .then((result) => {
+      console.info("[wanoku-pwa] IndexedDB opt-in load result", result);
+      updateIndexedDbOutput(describeWanokuIndexedDbLoadResult(result));
+    })
+    .catch((error: unknown) => {
+      console.warn("[wanoku-pwa] IndexedDB opt-in load failed", error);
+      updateIndexedDbOutput("IndexedDBからの読込に失敗しました。consoleを確認してください。");
+    });
 });
 
 document.querySelector<HTMLButtonElement>("[data-action='export-backup']")?.addEventListener("click", () => {
