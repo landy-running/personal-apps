@@ -9,6 +9,8 @@ export type SaveFailureReason =
   | "corrupt-data"
   | "corrupt-lock"
   | "quota-exceeded"
+  | "blocked"
+  | "validation-failed"
   | "storage-unavailable"
   | "unknown";
 
