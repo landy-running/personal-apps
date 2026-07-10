@@ -3,7 +3,7 @@
 最終確認日: 2026-07-10  
 対象: `workers/runos-strava-worker`
 
-この文書は、RunOS Legacy PWA向けStrava WorkerモックをCloudflareへデプロイするための手順です。現時点ではStrava本接続を行わず、`/health`、`/auth/start`、`/auth/callback`、`/activities` のモック応答だけを確認します。
+この文書は、RunOS Legacy PWA向けStrava WorkerをCloudflareへデプロイするための手順です。現時点ではWorker側でStrava OAuth本接続と活動取得を行いますが、RunOS HTML変更、活動インポートUI、`meridian.v1` 書き込みはまだ行いません。
 
 ## 1. 前提
 
@@ -11,7 +11,8 @@
 - Workerは `workers/runos-strava-worker`
 - `client_secret`、`refresh_token`、`access_token` はPWA/HTML/localStorageへ置かない
 - `meridian.v1` へは書き込まない
-- Strava本接続、token交換、token保存はまだ行わない
+- token交換とtoken保存はWorker側だけで行う
+- token保存先はCloudflare KV binding `STRAVA_TOKEN_KV`
 
 ## 2. npm scripts
 
@@ -75,20 +76,20 @@ https://runos-strava-worker.<account>.workers.dev
 
 `workers/runos-strava-worker/wrangler.toml` にはsecretを書かない。
 
-モック段階で使う環境変数:
+現在使う環境変数:
 
 | 名前 | 例 | 用途 |
 |---|---|---|
-| `TOKEN_STORAGE` | `mock` | token保存なしのモック動作 |
-| `RUNOS_LEGACY_PWA_ORIGIN` | `https://<runos-legacy-pwa>.pages.dev` | CORSで許可するRunOS Legacy PWA公開URL |
+| `TOKEN_STORAGE` | `kv` | Cloudflare KVへtoken保存 |
+| `RUNOS_LEGACY_PWA_ORIGIN` | `https://runos-legacy.pages.dev` | CORSで許可するRunOS Legacy PWA公開URL |
 | `LOCAL_DEV_ORIGINS` | `http://localhost:4173,http://127.0.0.1:4173,http://localhost:5173,http://127.0.0.1:5173` | CORSで許可する開発URL |
 
 本接続前に追加する環境変数・secret:
 
 | 名前 | 設定方法 | 注意 |
 |---|---|---|
-| `STRAVA_CLIENT_ID` | Cloudflare環境変数 | 公開情報だがWorker側だけで扱う |
-| `STRAVA_REDIRECT_URI` | Cloudflare環境変数 | Stravaアプリ設定と一致させる |
+| `STRAVA_CLIENT_ID` | Cloudflare secretまたは環境変数 | 公開情報だがWorker側だけで扱う |
+| `STRAVA_REDIRECT_URI` | `wrangler.toml` の `[vars]` | Stravaアプリ設定と一致させる |
 | `STRAVA_CLIENT_SECRET` | `wrangler secret put STRAVA_CLIENT_SECRET` | repoへ書かない |
 
 secret設定例:
@@ -97,6 +98,32 @@ secret設定例:
 npx wrangler secret put STRAVA_CLIENT_SECRET --config workers/runos-strava-worker/wrangler.toml
 ```
 
+`STRAVA_CLIENT_ID` もsecretとして登録する場合:
+
+```bash
+npx wrangler secret put STRAVA_CLIENT_ID --config workers/runos-strava-worker/wrangler.toml
+```
+
+## 5.1 KV作成・binding設定
+
+KV namespaceを作成する:
+
+```bash
+npx wrangler kv namespace create STRAVA_TOKEN_KV --config workers/runos-strava-worker/wrangler.toml
+npx wrangler kv namespace create STRAVA_TOKEN_KV --preview --config workers/runos-strava-worker/wrangler.toml
+```
+
+出力された `id` と `preview_id` を `workers/runos-strava-worker/wrangler.toml` の次の箇所へ設定する。
+
+```toml
+[[kv_namespaces]]
+binding = "STRAVA_TOKEN_KV"
+id = "<production namespace id>"
+preview_id = "<preview namespace id>"
+```
+
+KVが未設定の場合、Workerは `/auth/start`、`/auth/callback`、`/athlete`、`/activities` で `token_storage_unavailable` を返す。
+
 ## 6. endpoint確認
 
 以下の例ではWorker URLを `https://runos-strava-worker.<account>.workers.dev` とします。
@@ -104,54 +131,69 @@ npx wrangler secret put STRAVA_CLIENT_SECRET --config workers/runos-strava-worke
 ### `/health`
 
 ```bash
-curl https://runos-strava-worker.<account>.workers.dev/health
+curl -H "Origin: https://runos-legacy.pages.dev" https://runos-strava-worker.<account>.workers.dev/health
 ```
 
 確認観点:
 
 - `ok: true`
-- `mock: true`
-- `env.tokenStorage: "mock"`
+- `mock: false`
+- `env.tokenStorage: "kv"`
+- `env.tokenKvConfigured: true`
 - `env.runosLegacyPwaOriginConfigured` が本番では `true`
 - secret値そのものがレスポンスに出ていない
 
 ### `/auth/start`
 
-```bash
-curl "https://runos-strava-worker.<account>.workers.dev/auth/start?scope=activity:read&state=manual-check"
+ブラウザで開く:
+
+```text
+https://runos-strava-worker.<account>.workers.dev/auth/start
 ```
 
 確認観点:
 
-- `authorizationUrl` が返る
-- `requestedScope` が `activity:read`
-- `client_secret` がレスポンスに出ていない
-- 現段階ではStravaへredirectしない
+- Strava認可画面へredirectする
+- 初期scopeは `activity:read`
+- `activity:read_all` はまだ要求しない
+- `client_secret` がURLや画面に出ていない
 
 ### `/auth/callback`
 
+`/auth/start` からStrava認可後、自動的に `/auth/callback` へ戻る。
+
+確認観点:
+
+- 「Strava接続成功」の簡単なHTMLが返る
+- token交換はWorker側だけで行われる
+- tokenはKVへ保存される
+- `refresh_token` や `access_token` が返らない
+
+### `/athlete`
+
 ```bash
-curl "https://runos-strava-worker.<account>.workers.dev/auth/callback?code=mock-code&scope=activity:read&state=manual-check"
+curl -H "Origin: https://runos-legacy.pages.dev" https://runos-strava-worker.<account>.workers.dev/athlete
 ```
 
 確認観点:
 
-- callback受信のモック結果が返る
-- token交換は行われない
-- `refresh_token` や `access_token` が返らない
+- 接続中アスリート情報が返る
+- `access_token` / `refresh_token` が返らない
+- access token期限切れ時はWorker側でrefreshされる
 
 ### `/activities`
 
 ```bash
-curl "https://runos-strava-worker.<account>.workers.dev/activities?page=1&per_page=30"
+curl -H "Origin: https://runos-legacy.pages.dev" "https://runos-strava-worker.<account>.workers.dev/activities?page=1&per_page=30"
 ```
 
 確認観点:
 
-- `mock: true`
+- `source: "strava_api"`
 - `rawActivities` と `previews` が返る
 - ランニング活動は `importable: true`
 - 非ランニング活動は `importable: false`
+- `rateLimit` にStravaのrate limit header要約が返る
 - `runosActivity` はプレビュー用であり、`meridian.v1` へ直接書かない
 
 ## 7. CORS方針
@@ -160,7 +202,7 @@ curl "https://runos-strava-worker.<account>.workers.dev/activities?page=1&per_pa
 
 - RunOS Legacy PWAのCloudflare Pages公開URL
   - `RUNOS_LEGACY_PWA_ORIGIN` に設定する
-  - 例: `https://<runos-legacy-pwa>.pages.dev`
+  - 現在値: `https://runos-legacy.pages.dev`
 - localhost開発URL
   - `http://localhost:4173`
   - `http://127.0.0.1:4173`
@@ -206,16 +248,14 @@ curl "https://runos-strava-worker.<account>.workers.dev/activities?page=1&per_pa
 - `RUNOS_LEGACY_PWA_ORIGIN` が設定済み
 - Stravaアプリのcallback domain / redirect URIがWorker URLと一致している
 - `STRAVA_CLIENT_SECRET` をrepoへ書いていない
-- token保存先をKVにするかD1にするか決めている
+- KV binding `STRAVA_TOKEN_KV` が設定済み
 - state検証方針が決まっている
 - tokenやAuthorization headerをログに出さない
 - `/activities` の結果を `meridian.v1` へ直接書かず、プレビュー確認にする
 
 ## 10. まだ行わないこと
 
-- Strava本接続
-- OAuth token交換
-- refresh token保存
 - RunOS HTML変更
 - `meridian.v1` 書き込み
 - Wanoku連携
+- `activity:read_all` の明示選択UI

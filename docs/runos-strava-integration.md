@@ -3,7 +3,7 @@
 最終確認日: 2026-07-10  
 対象: RunOS Legacy PWA / Cloudflare Worker / Strava API
 
-この文書は、RunOS Legacy PWAからStrava活動を安全に取得するための設計メモです。現時点ではWorkerモックまでを対象とし、Strava本接続、RunOS HTML変更、`meridian.v1` への書き込みは行いません。
+この文書は、RunOS Legacy PWAからStrava活動を安全に取得するための設計メモです。現時点ではCloudflare Worker側のStrava OAuth本接続までを対象とし、RunOS HTML変更、活動インポートUI、`meridian.v1` への書き込みは行いません。
 
 参照元:
 
@@ -57,7 +57,7 @@
 8. PWAはWorkerの `/activities` を呼び、Strava活動のプレビューを取得する
 9. PWAはプレビューを表示し、ユーザーが確認したものだけRunOSへインポートする
 
-現時点のモックWorkerでは、5〜7の本処理は行わず、モックレスポンスのみ返す。
+現時点のWorkerでは、5〜7をCloudflare Worker内で実行し、tokenはCloudflare KVへ保存する。PWA/HTMLへ `access_token` や `refresh_token` は返さない。
 
 ## 4. Workerに置くsecret / 環境変数
 
@@ -68,25 +68,21 @@ Cloudflare Worker側で扱う環境変数:
 | `STRAVA_CLIENT_ID` | 環境変数 | Stravaアプリのclient id | 原則Worker側で管理。公開情報だがPWAは知らなくてよい |
 | `STRAVA_CLIENT_SECRET` | secret | token交換・refreshに使うsecret | 禁止 |
 | `STRAVA_REDIRECT_URI` | 環境変数 | Stravaから戻るWorker callback URL | PWAに置く必要なし |
-| `TOKEN_STORAGE` | 環境変数 | token保存方式の切替。初期は `mock` | PWAに置く必要なし |
+| `TOKEN_STORAGE` | 環境変数 | token保存方式。現在は `kv` | PWAに置く必要なし |
 | `RUNOS_LEGACY_PWA_ORIGIN` | 環境変数 | CORSで許可するRunOS Legacy PWA公開URL | PWAに置く必要なし |
 | `LOCAL_DEV_ORIGINS` | 環境変数 | CORSで許可するlocalhost開発URL | PWAに置く必要なし |
+| `STRAVA_TOKEN_KV` | KV binding | tokenとOAuth stateを保存するCloudflare KV | PWAに置く必要なし |
 
 `STRAVA_CLIENT_SECRET` は `wrangler.toml` やソースコードへ書かず、Cloudflare Dashboardまたは `wrangler secret put STRAVA_CLIENT_SECRET` で設定する。
 
 ## 5. TOKEN_STORAGE 方針
 
-初期段階:
-
-- `TOKEN_STORAGE=mock`
-- token永続化なし
-- Strava本接続なし
-- `/activities` は固定のモック活動を返す
-
-本接続段階:
+現在の最小実装:
 
 - 個人利用・単一ユーザーならCloudflare KVで開始可能
-- 複数ユーザーやtoken更新履歴を厳密に扱うならD1を検討する
+- `TOKEN_STORAGE=kv`
+- KV binding名は `STRAVA_TOKEN_KV`
+- token保存キーはWorker内部の固定キーで、個人利用の単一接続を前提にする
 - 保存するのはWorker側のみ
   - athlete id
   - granted scopes
@@ -94,8 +90,10 @@ Cloudflare Worker側で扱う環境変数:
   - latest access token
   - expires_at
   - updated_at
+- OAuth `state` も短いTTL付きでKVに保存する
 - Stravaのrefresh tokenは更新時に変わり得るため、常に最新のrefresh tokenで上書きする
 - 古いtokenをログ、レスポンス、PWA、localStorageへ出さない
+- 複数ユーザーやtoken更新履歴を厳密に扱うならD1を検討する
 
 ## 6. PWA側に置いてよい情報 / 置いてはいけない情報
 
@@ -248,22 +246,22 @@ workers/runos-strava-worker
 | endpoint | 概要 |
 |---|---|
 | `GET /health` | Workerの稼働状態と環境変数設定有無を返す |
-| `GET /auth/start` | Strava認可URLの形を返す。まだredirectしない |
-| `GET /auth/callback` | callback受信のモック結果を返す。token交換はしない |
-| `GET /activities` | Strava SummaryActivity風のモックとRunOSプレビュー候補を返す |
+| `GET /auth/start` | Strava認可URLへredirectする。scopeは `activity:read` 固定 |
+| `GET /auth/callback` | codeをtoken endpointで交換し、tokenをKVへ保存する |
+| `GET /athlete` | 接続中アスリート情報を返す。tokenは返さない |
+| `GET /activities` | Strava `/athlete/activities` とRunOSプレビュー候補を返す |
 
-モックの制約:
+現在の制約:
 
-- Strava本接続はしない
-- tokenを発行・保存しない
+- `activity:read_all` はまだ要求しない
 - `meridian.v1` へ書き込まない
 - CORSは `RUNOS_LEGACY_PWA_ORIGIN` と `LOCAL_DEV_ORIGINS` のみ許可する
 - その他のOriginからのブラウザアクセスは403にする
 
 ## 14. 次の小さな作業候補
 
-1. WorkerモックをCloudflareへデプロイし、`/health` と `/activities` をHTTPSで確認する
-2. RunOS Legacy PWAからWorker URLを手入力して `/activities` をプレビュー表示する最小UIを検討する
-3. `meridian.v1` へ書く前のStravaインポート候補JSON fixtureをdocsに固定する
-4. 本接続前にtoken storageをKVにするかD1にするか決める
-5. Strava OAuth本接続の前に、state検証・CORS制限・ログ秘匿のテスト観点を作る
+1. KV namespace IDを `wrangler.toml` に設定し、WorkerをCloudflareへデプロイする
+2. `/auth/start` からStrava認可し、callback後に `/athlete` と `/activities` を確認する
+3. RunOS Legacy PWAからWorker URLを手入力して `/activities` をプレビュー表示する最小UIを検討する
+4. `meridian.v1` へ書く前のStravaインポート候補JSON fixtureをdocsに固定する
+5. `activity:read_all` を明示選択にするUIと説明文を設計する

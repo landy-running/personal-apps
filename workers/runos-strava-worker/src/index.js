@@ -1,56 +1,16 @@
 const DEFAULT_SCOPE = "activity:read";
-const ALLOWED_SCOPES = new Set(["activity:read", "activity:read_all"]);
+const TOKEN_KV_KEY = "runos:strava:token:primary";
+const STATE_PREFIX = "runos:strava:oauth-state:";
+const STATE_TTL_SECONDS = 10 * 60;
+const REFRESH_SKEW_SECONDS = 5 * 60;
+const STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize";
+const STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token";
+const STRAVA_API_BASE = "https://www.strava.com/api/v3";
 const DEFAULT_LOCAL_DEV_ORIGINS = [
   "http://localhost:4173",
   "http://127.0.0.1:4173",
   "http://localhost:5173",
   "http://127.0.0.1:5173"
-];
-
-const MOCK_STRAVA_ACTIVITIES = [
-  {
-    id: 10100000001,
-    name: "Morning Easy Run",
-    type: "Run",
-    sport_type: "Run",
-    distance: 8200,
-    moving_time: 2820,
-    elapsed_time: 2910,
-    total_elevation_gain: 42,
-    start_date: "2026-07-09T21:30:00Z",
-    start_date_local: "2026-07-10T06:30:00+09:00",
-    average_heartrate: 142,
-    max_heartrate: 166,
-    average_cadence: 83.5
-  },
-  {
-    id: 10100000002,
-    name: "Tempo Blocks",
-    type: "Run",
-    sport_type: "Run",
-    workout_type: 3,
-    distance: 11250,
-    moving_time: 3480,
-    elapsed_time: 3600,
-    total_elevation_gain: 68,
-    start_date: "2026-07-07T10:00:00Z",
-    start_date_local: "2026-07-07T19:00:00+09:00",
-    average_heartrate: 158,
-    max_heartrate: 181,
-    average_cadence: 86.1
-  },
-  {
-    id: 10100000003,
-    name: "Recovery Ride",
-    type: "Ride",
-    sport_type: "Ride",
-    distance: 20400,
-    moving_time: 4200,
-    elapsed_time: 4300,
-    total_elevation_gain: 110,
-    start_date: "2026-07-06T23:00:00Z",
-    start_date_local: "2026-07-07T08:00:00+09:00"
-  }
 ];
 
 function splitOrigins(value) {
@@ -88,15 +48,41 @@ function isCorsAllowed(request, env) {
   return !origin || getAllowedOrigins(env).has(origin);
 }
 
+function noStoreHeaders() {
+  return { "Cache-Control": "no-store" };
+}
+
 function json(request, env, payload, init = {}) {
   return new Response(JSON.stringify(payload, null, 2), {
     ...init,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
+      ...noStoreHeaders(),
       ...corsHeaders(request, env),
       ...(init.headers || {})
     }
   });
+}
+
+function html(request, env, body, init = {}) {
+  return new Response(body, {
+    ...init,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...noStoreHeaders(),
+      ...corsHeaders(request, env),
+      ...(init.headers || {})
+    }
+  });
+}
+
+function sanitizeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function envStatus(env) {
@@ -104,45 +90,213 @@ function envStatus(env) {
     clientIdConfigured: Boolean(env.STRAVA_CLIENT_ID),
     clientSecretConfigured: Boolean(env.STRAVA_CLIENT_SECRET),
     redirectUriConfigured: Boolean(env.STRAVA_REDIRECT_URI),
-    tokenStorage: env.TOKEN_STORAGE || "mock",
+    tokenStorage: env.TOKEN_STORAGE || "kv",
+    tokenKvConfigured: Boolean(env.STRAVA_TOKEN_KV),
     runosLegacyPwaOriginConfigured: Boolean(env.RUNOS_LEGACY_PWA_ORIGIN),
     allowedOrigins: [...getAllowedOrigins(env)]
   };
 }
 
-function sanitizeScope(scope) {
-  const requested = String(scope || DEFAULT_SCOPE)
+function requireConfig(env) {
+  const missing = [];
+  if (!env.STRAVA_CLIENT_ID) missing.push("STRAVA_CLIENT_ID");
+  if (!env.STRAVA_CLIENT_SECRET) missing.push("STRAVA_CLIENT_SECRET");
+  if (!env.STRAVA_REDIRECT_URI) missing.push("STRAVA_REDIRECT_URI");
+  return missing;
+}
+
+function requireTokenKv(env) {
+  return env.STRAVA_TOKEN_KV && typeof env.STRAVA_TOKEN_KV.get === "function"
+    ? env.STRAVA_TOKEN_KV
+    : null;
+}
+
+function configError(request, env, missing) {
+  return json(request, env, {
+    error: "worker_config_missing",
+    missing,
+    message: "Required Strava Worker environment variables are missing."
+  }, { status: 500 });
+}
+
+function tokenStorageError(request, env) {
+  return json(request, env, {
+    error: "token_storage_unavailable",
+    message: "Cloudflare KV binding STRAVA_TOKEN_KV is not configured."
+  }, { status: 500 });
+}
+
+async function readJsonOrText(response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text.slice(0, 1000) };
+  }
+}
+
+function stravaError(status, body) {
+  return {
+    error: "strava_api_error",
+    status,
+    strava: body || null
+  };
+}
+
+function hasActivityReadScope(scope) {
+  const scopes = String(scope || "")
     .split(/[,\s]+/)
     .map((part) => part.trim())
     .filter(Boolean);
-
-  const accepted = requested.filter((part) => ALLOWED_SCOPES.has(part));
-  return accepted.length > 0 ? accepted.join(",") : DEFAULT_SCOPE;
+  return scopes.includes("activity:read") || scopes.includes("activity:read_all");
 }
 
-function buildAuthStartResponse(request, env) {
-  const url = new URL(request.url);
-  const scope = sanitizeScope(url.searchParams.get("scope"));
-  const state = url.searchParams.get("state") || `mock-${crypto.randomUUID()}`;
-  const redirectUri = env.STRAVA_REDIRECT_URI || `${url.origin}/auth/callback`;
-  const clientId = env.STRAVA_CLIENT_ID || "mock-client-id";
+async function loadToken(kv) {
+  return kv.get(TOKEN_KV_KEY, "json");
+}
 
-  const authorizationUrl = new URL("https://www.strava.com/oauth/authorize");
-  authorizationUrl.searchParams.set("client_id", clientId);
-  authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+async function saveToken(kv, token) {
+  await kv.put(TOKEN_KV_KEY, JSON.stringify({
+    ...token,
+    updatedAt: new Date().toISOString()
+  }));
+}
+
+function sanitizeTokenForStorage(tokenResponse, fallback = {}) {
+  return {
+    token_type: tokenResponse.token_type || fallback.token_type || "Bearer",
+    access_token: tokenResponse.access_token,
+    refresh_token: tokenResponse.refresh_token || fallback.refresh_token,
+    expires_at: Number(tokenResponse.expires_at || fallback.expires_at || 0),
+    expires_in: Number(tokenResponse.expires_in || 0),
+    scope: tokenResponse.scope || fallback.scope || "",
+    athlete: tokenResponse.athlete || fallback.athlete || null,
+    connectedAt: fallback.connectedAt || new Date().toISOString()
+  };
+}
+
+function publicConnectionInfo(token) {
+  if (!token) return { connected: false };
+  return {
+    connected: true,
+    athleteId: token.athlete?.id || null,
+    scope: token.scope || "",
+    expiresAt: token.expires_at || null,
+    connectedAt: token.connectedAt || null,
+    updatedAt: token.updatedAt || null
+  };
+}
+
+async function exchangeAuthorizationCode(env, code) {
+  const response = await fetch(STRAVA_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.STRAVA_CLIENT_ID,
+      client_secret: env.STRAVA_CLIENT_SECRET,
+      code,
+      grant_type: "authorization_code"
+    })
+  });
+
+  const body = await readJsonOrText(response);
+  if (!response.ok) throw stravaError(response.status, body);
+  return body;
+}
+
+async function refreshToken(env, kv, currentToken) {
+  if (!currentToken?.refresh_token) {
+    throw { error: "not_connected", message: "No refresh token is stored in Worker KV." };
+  }
+
+  const response = await fetch(STRAVA_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.STRAVA_CLIENT_ID,
+      client_secret: env.STRAVA_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: currentToken.refresh_token
+    })
+  });
+
+  const body = await readJsonOrText(response);
+  if (!response.ok) throw stravaError(response.status, body);
+
+  const updated = sanitizeTokenForStorage(body, currentToken);
+  await saveToken(kv, updated);
+  return updated;
+}
+
+async function getValidToken(env, kv, options = {}) {
+  const token = await loadToken(kv);
+  if (!token) {
+    throw { error: "not_connected", message: "Strava is not connected yet. Open /auth/start first." };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!options.forceRefresh && Number(token.expires_at || 0) > now + REFRESH_SKEW_SECONDS) {
+    return token;
+  }
+
+  return refreshToken(env, kv, token);
+}
+
+async function callStravaApi(env, kv, path, searchParams = new URLSearchParams()) {
+  let token = await getValidToken(env, kv);
+  let url = `${STRAVA_API_BASE}${path}`;
+  const query = searchParams.toString();
+  if (query) url += `?${query}`;
+
+  let response = await fetch(url, {
+    headers: { "Authorization": `Bearer ${token.access_token}` }
+  });
+
+  if (response.status === 401) {
+    token = await getValidToken(env, kv, { forceRefresh: true });
+    response = await fetch(url, {
+      headers: { "Authorization": `Bearer ${token.access_token}` }
+    });
+  }
+
+  const body = await readJsonOrText(response);
+  if (!response.ok) {
+    throw { ...stravaError(response.status, body), rateLimit: readRateLimitHeaders(response) };
+  }
+
+  return { body, rateLimit: readRateLimitHeaders(response) };
+}
+
+function readRateLimitHeaders(response) {
+  return {
+    limit: response.headers.get("x-ratelimit-limit"),
+    usage: response.headers.get("x-ratelimit-usage")
+  };
+}
+
+async function saveOauthState(kv, state, payload) {
+  await kv.put(`${STATE_PREFIX}${state}`, JSON.stringify(payload), {
+    expirationTtl: STATE_TTL_SECONDS
+  });
+}
+
+async function consumeOauthState(kv, state) {
+  const key = `${STATE_PREFIX}${state}`;
+  const payload = await kv.get(key, "json");
+  if (payload) await kv.delete(key);
+  return payload;
+}
+
+function buildAuthorizeUrl(env, state) {
+  const authorizationUrl = new URL(STRAVA_AUTHORIZE_URL);
+  authorizationUrl.searchParams.set("client_id", env.STRAVA_CLIENT_ID);
+  authorizationUrl.searchParams.set("redirect_uri", env.STRAVA_REDIRECT_URI);
   authorizationUrl.searchParams.set("response_type", "code");
   authorizationUrl.searchParams.set("approval_prompt", "auto");
-  authorizationUrl.searchParams.set("scope", scope);
+  authorizationUrl.searchParams.set("scope", DEFAULT_SCOPE);
   authorizationUrl.searchParams.set("state", state);
-
-  return {
-    mock: true,
-    nextAction: "In production this endpoint may redirect to authorizationUrl.",
-    authorizationUrl: authorizationUrl.toString(),
-    state,
-    requestedScope: scope,
-    env: envStatus(env)
-  };
+  return authorizationUrl;
 }
 
 function isRunActivity(activity) {
@@ -171,7 +325,7 @@ function toRunOsPreview(activity) {
       externalId: `strava:${activity.id}`,
       importable: false,
       skipReason: "ランニング活動ではない、または必須値が不足しています",
-      source: "strava_api_mock",
+      source: "strava_api",
       rawSummary: activity
     };
   }
@@ -207,27 +361,181 @@ function toRunOsPreview(activity) {
   };
 }
 
-function filterMockActivities(request) {
-  const url = new URL(request.url);
-  const after = Number(url.searchParams.get("after") || 0);
+function buildActivitiesQuery(url) {
+  const query = new URLSearchParams();
   const before = Number(url.searchParams.get("before") || 0);
+  const after = Number(url.searchParams.get("after") || 0);
   const page = Math.max(1, Number(url.searchParams.get("page") || 1));
   const perPage = Math.max(1, Math.min(100, Number(url.searchParams.get("per_page") || 30)));
 
-  const filtered = MOCK_STRAVA_ACTIVITIES.filter((activity) => {
-    const seconds = Math.floor(new Date(activity.start_date).getTime() / 1000);
-    if (after && seconds <= after) return false;
-    if (before && seconds >= before) return false;
-    return true;
-  });
+  if (before > 0) query.set("before", String(Math.floor(before)));
+  if (after > 0) query.set("after", String(Math.floor(after)));
+  query.set("page", String(page));
+  query.set("per_page", String(perPage));
 
-  const start = (page - 1) * perPage;
   return {
+    query,
     page,
     perPage,
-    totalMockActivities: filtered.length,
-    activities: filtered.slice(start, start + perPage)
+    before: before > 0 ? Math.floor(before) : null,
+    after: after > 0 ? Math.floor(after) : null
   };
+}
+
+function buildSuccessHtml(token) {
+  const athlete = token.athlete || {};
+  const name = [athlete.firstname, athlete.lastname].filter(Boolean).join(" ") || athlete.username || `Athlete ${athlete.id || ""}`.trim();
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RunOS Strava 接続成功</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0b0e15;color:#f6fffc;margin:0;padding:32px;line-height:1.7}
+    .card{max-width:720px;margin:auto;background:#121826;border:1px solid #243244;border-radius:18px;padding:24px}
+    .ok{color:#20d6b5;font-weight:800}
+    code{background:#0b0e15;border:1px solid #243244;border-radius:8px;padding:2px 6px}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1 class="ok">Strava接続成功</h1>
+    <p>RunOS Strava Workerに接続情報を保存しました。</p>
+    <p>接続アスリート: <strong>${sanitizeHtml(name)}</strong></p>
+    <p>許可scope: <code>${sanitizeHtml(token.scope || "")}</code></p>
+    <p>refresh_token / access_token はこの画面にもPWAにも返していません。</p>
+    <p>このタブを閉じてRunOSへ戻ってください。</p>
+  </main>
+</body>
+</html>`;
+}
+
+async function handleAuthStart(request, env) {
+  const missing = requireConfig(env);
+  if (missing.length) return configError(request, env, missing);
+
+  const kv = requireTokenKv(env);
+  if (!kv) return tokenStorageError(request, env);
+
+  const state = crypto.randomUUID();
+  await saveOauthState(kv, state, {
+    scope: DEFAULT_SCOPE,
+    createdAt: new Date().toISOString()
+  });
+
+  return Response.redirect(buildAuthorizeUrl(env, state).toString(), 302);
+}
+
+async function handleAuthCallback(request, env) {
+  const missing = requireConfig(env);
+  if (missing.length) return configError(request, env, missing);
+
+  const kv = requireTokenKv(env);
+  if (!kv) return tokenStorageError(request, env);
+
+  const url = new URL(request.url);
+  const error = url.searchParams.get("error");
+  if (error) {
+    return html(request, env, `<!doctype html><meta charset="utf-8"><title>Strava接続失敗</title><p>Strava接続が拒否または失敗しました: ${sanitizeHtml(error)}</p>`, { status: 400 });
+  }
+
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const grantedScope = url.searchParams.get("scope") || "";
+
+  if (!code || !state) {
+    return html(request, env, "<!doctype html><meta charset=\"utf-8\"><title>Strava接続失敗</title><p>code または state が不足しています。</p>", { status: 400 });
+  }
+
+  const savedState = await consumeOauthState(kv, state);
+  if (!savedState) {
+    return html(request, env, "<!doctype html><meta charset=\"utf-8\"><title>Strava接続失敗</title><p>OAuth state が無効または期限切れです。/auth/start からやり直してください。</p>", { status: 400 });
+  }
+
+  try {
+    const tokenResponse = await exchangeAuthorizationCode(env, code);
+    const token = sanitizeTokenForStorage(tokenResponse, {
+      scope: tokenResponse.scope || grantedScope
+    });
+
+    if (!token.access_token || !token.refresh_token || !token.expires_at) {
+      return html(request, env, "<!doctype html><meta charset=\"utf-8\"><title>Strava接続失敗</title><p>Strava token response の必須値が不足しています。</p>", { status: 502 });
+    }
+
+    if (!hasActivityReadScope(token.scope || grantedScope)) {
+      return html(request, env, "<!doctype html><meta charset=\"utf-8\"><title>Strava接続失敗</title><p>activity:read が許可されていません。Strava認可画面で activity:read を許可してください。</p>", { status: 403 });
+    }
+
+    await saveToken(kv, token);
+    return html(request, env, buildSuccessHtml(token));
+  } catch (errorResponse) {
+    return html(request, env, `<!doctype html><meta charset="utf-8"><title>Strava接続失敗</title><p>Strava token交換に失敗しました。</p><pre>${sanitizeHtml(JSON.stringify(errorResponse, null, 2))}</pre>`, { status: 502 });
+  }
+}
+
+async function handleAthlete(request, env) {
+  const missing = requireConfig(env);
+  if (missing.length) return configError(request, env, missing);
+
+  const kv = requireTokenKv(env);
+  if (!kv) return tokenStorageError(request, env);
+
+  try {
+    const result = await callStravaApi(env, kv, "/athlete");
+    const current = await loadToken(kv);
+    if (current) {
+      await saveToken(kv, { ...current, athlete: result.body });
+    }
+
+    return json(request, env, {
+      connected: true,
+      athlete: result.body,
+      scope: current?.scope || "",
+      expiresAt: current?.expires_at || null,
+      rateLimit: result.rateLimit
+    });
+  } catch (errorResponse) {
+    return json(request, env, errorResponse, { status: errorResponse.status || 500 });
+  }
+}
+
+async function handleActivities(request, env) {
+  const missing = requireConfig(env);
+  if (missing.length) return configError(request, env, missing);
+
+  const kv = requireTokenKv(env);
+  if (!kv) return tokenStorageError(request, env);
+
+  const url = new URL(request.url);
+  const params = buildActivitiesQuery(url);
+
+  try {
+    const result = await callStravaApi(env, kv, "/athlete/activities", params.query);
+    const activities = Array.isArray(result.body) ? result.body : [];
+    const previews = activities.map(toRunOsPreview);
+    const token = await loadToken(kv);
+
+    return json(request, env, {
+      source: "strava_api",
+      note: "Do not write this response to meridian.v1 without a user confirmation step.",
+      connected: true,
+      scope: token?.scope || "",
+      paging: {
+        page: params.page,
+        perPage: params.perPage,
+        before: params.before,
+        after: params.after
+      },
+      rateLimit: result.rateLimit,
+      rawActivities: activities,
+      previews,
+      importableCount: previews.filter((preview) => preview.importable).length,
+      skippedCount: previews.filter((preview) => !preview.importable).length
+    });
+  } catch (errorResponse) {
+    return json(request, env, errorResponse, { status: errorResponse.status || 500 });
+  }
 }
 
 export default {
@@ -253,53 +561,29 @@ export default {
     }
 
     if (url.pathname === "/health") {
+      const kv = requireTokenKv(env);
+      let connection = { connected: false };
+      if (kv) {
+        connection = publicConnectionInfo(await loadToken(kv));
+      }
+
       return json(request, env, {
         ok: true,
         service: "runos-strava-worker",
-        mock: true,
-        env: envStatus(env)
+        mock: false,
+        env: envStatus(env),
+        connection
       });
     }
 
-    if (url.pathname === "/auth/start") {
-      return json(request, env, buildAuthStartResponse(request, env));
-    }
-
-    if (url.pathname === "/auth/callback") {
-      return json(request, env, {
-        mock: true,
-        message: "Callback received. Token exchange is intentionally not implemented yet.",
-        hasCode: Boolean(url.searchParams.get("code")),
-        error: url.searchParams.get("error") || null,
-        state: url.searchParams.get("state") || null,
-        grantedScope: url.searchParams.get("scope") || null,
-        tokenStorage: env.TOKEN_STORAGE || "mock"
-      });
-    }
-
-    if (url.pathname === "/activities") {
-      const page = filterMockActivities(request);
-      const previews = page.activities.map(toRunOsPreview);
-
-      return json(request, env, {
-        mock: true,
-        source: "strava_api_mock",
-        note: "No Strava request is made. Do not write this response to meridian.v1 without a user confirmation step.",
-        paging: {
-          page: page.page,
-          perPage: page.perPage,
-          totalMockActivities: page.totalMockActivities
-        },
-        rawActivities: page.activities,
-        previews,
-        importableCount: previews.filter((preview) => preview.importable).length,
-        skippedCount: previews.filter((preview) => !preview.importable).length
-      });
-    }
+    if (url.pathname === "/auth/start") return handleAuthStart(request, env);
+    if (url.pathname === "/auth/callback") return handleAuthCallback(request, env);
+    if (url.pathname === "/athlete") return handleAthlete(request, env);
+    if (url.pathname === "/activities") return handleActivities(request, env);
 
     return json(request, env, {
       error: "not_found",
-      endpoints: ["/health", "/auth/start", "/auth/callback", "/activities"]
+      endpoints: ["/health", "/auth/start", "/auth/callback", "/athlete", "/activities"]
     }, { status: 404 });
   }
 };
