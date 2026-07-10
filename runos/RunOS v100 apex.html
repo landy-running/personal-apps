@@ -2384,6 +2384,243 @@ function renderInsights(){
   wireGB();
 }
 
+/* ---- Strava Worker preview UI (does not write meridian.v1) ---- */
+const STRAVA_WORKER_URL_KEY='runos.stravaWorkerUrl.v1';
+const DEFAULT_STRAVA_WORKER_URL='https://runos-strava-worker.mtk0808.workers.dev';
+let STRAVA_ACTIVITY_PREVIEWS=[];
+function escapeHTML(v){ return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function exportRunosBackup(prefix='runos-backup'){
+  const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
+  const fname=`${prefix}-${todayISO()}.json`;
+  const u=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=u; a.download=fname; a.click(); URL.revokeObjectURL(u);
+}
+function getStravaWorkerUrl(){
+  try{ return localStorage.getItem(STRAVA_WORKER_URL_KEY)||DEFAULT_STRAVA_WORKER_URL; }
+  catch(err){ console.warn('[RunOS Strava] Worker URL read failed',err); return DEFAULT_STRAVA_WORKER_URL; }
+}
+function normalizeStravaWorkerUrl(url){
+  const v=String(url||'').trim().replace(/\/+$/,'');
+  if(!/^https?:\/\//i.test(v)) throw new Error('Worker URLは http(s) で始めてください');
+  return v;
+}
+function saveStravaWorkerUrl(url){
+  const v=normalizeStravaWorkerUrl(url);
+  try{ localStorage.setItem(STRAVA_WORKER_URL_KEY,v); return {ok:true,url:v}; }
+  catch(err){ console.warn('[RunOS Strava] Worker URL save failed',err); return {ok:false,url:v,error:err}; }
+}
+function stravaStatus(message,kind='info'){
+  const box=el('stravaWorkerStatus'); if(!box) return;
+  const color=kind==='error'?'var(--coral)':kind==='ok'?'var(--teal)':kind==='warn'?'var(--gold)':'var(--ink-2)';
+  box.textContent=message; box.style.color=color;
+}
+function stravaErrorMessage(err){
+  const code=err&&err.error;
+  if(code==='not_connected') return 'Strava未接続です。先に「接続開始」を開いて認可してください。';
+  if(code==='token_storage_unavailable') return 'WorkerのKV設定が未完了です（STRAVA_TOKEN_KV）。';
+  if(code==='worker_config_missing') return `Worker設定が不足しています: ${(err.missing||[]).join(', ')}`;
+  if(code==='cors_forbidden') return 'CORSで拒否されました。RunOS legacy PWAの公開URLがWorkerに許可されているか確認してください。';
+  if(code==='strava_api_error') return `Strava APIエラー (${err.status||'unknown'})`;
+  return (err&&err.message)||'Strava Workerへの接続に失敗しました';
+}
+async function stravaFetch(path){
+  const base=normalizeStravaWorkerUrl(el('stravaWorkerUrl')?el('stravaWorkerUrl').value:getStravaWorkerUrl());
+  let res, data, text;
+  try{
+    res=await fetch(base+path,{headers:{Accept:'application/json'},cache:'no-store'});
+    text=await res.text();
+  }catch(err){
+    console.error('[RunOS Strava] fetch failed',err);
+    throw new Error('Workerへ接続できませんでした。CORS、ネットワーク、Worker URLを確認してください。');
+  }
+  try{ data=text?JSON.parse(text):{}; }catch(err){ data={message:text||''}; }
+  if(!res.ok){ console.warn('[RunOS Strava] worker error',res.status,data); throw data; }
+  return data;
+}
+function stravaAthleteName(a){
+  if(!a) return '—';
+  return [a.firstname,a.lastname].filter(Boolean).join(' ') || a.username || (a.id?`Athlete ${a.id}`:'—');
+}
+function stravaExternalId(preview){
+  const raw=preview&&preview.rawSummary||{};
+  return preview&&preview.externalId ? String(preview.externalId) : (raw.id!=null?`strava:${raw.id}`:null);
+}
+function stravaStartMs(preview){
+  const raw=preview&&preview.rawSummary||{};
+  const t=Date.parse(raw.start_date_local||raw.start_date||'');
+  return Number.isFinite(t)?t:null;
+}
+function existingStartMs(a){
+  const t=Date.parse(a.startDateLocal||a.startTime||a.startedAt||a.date||'');
+  return Number.isFinite(t)?t:null;
+}
+function findStravaDuplicate(preview){
+  const a=preview&&preview.runosActivity||{};
+  const externalId=stravaExternalId(preview);
+  const sourceId=externalId&&externalId.replace(/^strava:/,'');
+  const exact=(DB.activities||[]).find(x=>externalId&&(x.externalId===externalId||x.sourceId===externalId||x.stravaActivityId===sourceId));
+  if(exact) return {kind:'exact',activity:exact,message:'取り込み済み'};
+  const km=Number(a.km||0),dur=Number(a.durSec||0),date=a.date;
+  if(!km||!dur||!date) return null;
+  const cStart=stravaStartMs(preview);
+  const approx=(DB.activities||[]).find(x=>{
+    const xkm=Number(x.km||0),xdur=Number(x.durSec||0);
+    if(!xkm||!xdur) return false;
+    const distClose=Math.abs(xkm-km)/Math.max(km,xkm)<=0.02;
+    const durClose=Math.abs(xdur-dur)/Math.max(dur,xdur)<=0.02;
+    if(!distClose||!durClose) return false;
+    const xStart=existingStartMs(x);
+    const nearStart=cStart&&xStart&&Math.abs(cStart-xStart)<=2*60*60*1000;
+    return x.date===date||nearStart;
+  });
+  return approx?{kind:'approx',activity:approx,message:'重複の可能性あり'}:null;
+}
+function stravaCanImport(preview,dup){
+  return !!(preview&&preview.importable&&preview.runosActivity)&&!(dup&&dup.kind==='exact');
+}
+function renderStravaAthlete(data){
+  const box=el('stravaAthleteBox'); if(!box) return;
+  const a=data&&data.athlete;
+  box.innerHTML=`<div class="inputs">
+    <div class="row"><span class="l">接続状態</span><span class="r" style="color:var(--teal)">接続中</span></div>
+    <div class="row"><span class="l">アスリート</span><span class="r">${escapeHTML(stravaAthleteName(a))}</span></div>
+    <div class="row"><span class="l">Scope</span><span class="r mono">${escapeHTML(data.scope||'—')}</span></div>
+  </div>
+  <div class="hint" style="margin-top:6px">access_token / refresh_token はWorker側KVにのみ保存され、この画面には表示しません。</div>`;
+}
+function renderStravaActivities(data){
+  const box=el('stravaActivitiesBox'); if(!box) return;
+  const previews=Array.isArray(data&&data.previews)?data.previews:[];
+  STRAVA_ACTIVITY_PREVIEWS=previews;
+  if(!previews.length){ box.innerHTML='<div class="empty">活動がありません</div>'; return; }
+  box.innerHTML=`<div class="tscroll"><table><thead><tr>
+    <th>選択</th><th>日付</th><th>名前</th><th class="n">距離</th><th class="n">時間</th><th class="n">平均ペース</th><th class="n">平均心拍</th><th>状態</th>
+  </tr></thead><tbody>${previews.map((p,i)=>{
+    const a=p.runosActivity||{};
+    const raw=p.rawSummary||{};
+    const km=Number(a.km||0);
+    const dur=Number(a.durSec||0);
+    const pace=(km>0&&dur>0)?paceStr(dur/km):'—';
+    const ok=!!p.importable;
+    const dup=findStravaDuplicate(p);
+    const can=stravaCanImport(p,dup);
+    const checked=can&&!dup?'checked':'';
+    const disabled=can?'':'disabled';
+    const status=dup?dup.message:(ok?'選択可':'skip');
+    const statusColor=dup? (dup.kind==='exact'?'var(--ink-3)':'var(--gold)') : (ok?'var(--teal)':'var(--gold)');
+    return `<tr>
+      <td><input type="checkbox" data-strava-select="${i}" ${checked} ${disabled} style="width:auto"></td>
+      <td class="mono">${escapeHTML(a.date||String(raw.start_date_local||raw.start_date||'').slice(0,10)||'—')}</td>
+      <td>${escapeHTML(a.note||raw.name||'—')}</td>
+      <td class="n mono">${km?round(km,2)+'km':'—'}</td>
+      <td class="n mono">${dur?hms(dur):'—'}</td>
+      <td class="n mono">${pace}${pace!=='—'?'/km':''}</td>
+      <td class="n mono">${a.hrAvg||'—'}</td>
+      <td style="color:${statusColor}">${escapeHTML(status)}${!ok&&p.skipReason?`<div class="hint">${escapeHTML(p.skipReason)}</div>`:''}${dup&&dup.kind==='approx'?'<div class="hint">初期状態では未選択です</div>':''}</td>
+    </tr>`; }).join('')}</tbody></table></div>
+    <div class="row-actions" style="margin-top:10px">
+      <button class="btn ghost" id="stravaExportBackup">バックアップを書き出し</button>
+      <button class="btn" id="stravaImportSelected">選択した活動を取り込む</button>
+    </div>
+    <div class="hint" style="margin-top:8px">手動選択インポートです。選択した活動だけを既存save()経由で保存します。自動同期はしません。</div>`;
+  wireStravaImportUI();
+}
+function stravaPreviewToActivity(preview){
+  const a=preview&&preview.runosActivity||{}, raw=preview&&preview.rawSummary||{};
+  const km=Number(a.km), durSec=Math.round(Number(a.durSec));
+  if(!a.date||!isFinite(km)||km<=0||!isFinite(durSec)||durSec<60) return null;
+  const externalId=stravaExternalId(preview);
+  const sourceId=externalId&&externalId.replace(/^strava:/,'');
+  const id=externalId?`strava_${String(externalId).replace(/[^a-zA-Z0-9_-]/g,'_')}`:undefined;
+  const act=normalizeActivity({id,date:a.date,type:a.type||'easy',km,durSec,
+    hrAvg:a.hrAvg||null,hrMax:a.hrMax||null,elevM:a.elevM||null,cadence:a.cadence||null,
+    note:a.note||raw.name||'',source:'strava_api'});
+  act.externalId=externalId;
+  act.sourceId=externalId;
+  act.stravaActivityId=sourceId||null;
+  act.source='strava_api';
+  act.sourceName='Strava API';
+  act.startDateLocal=raw.start_date_local||null;
+  act.importedAt=new Date().toISOString();
+  return act;
+}
+function importSelectedStravaActivities(){
+  if(STORAGE_RECOVERY&&STORAGE_RECOVERY.active){ stravaStatus(saveFailureText(),'error'); return; }
+  const selected=[...document.querySelectorAll('[data-strava-select]:checked')].map(x=>parseInt(x.dataset.stravaSelect)).filter(i=>!isNaN(i));
+  if(!selected.length){ stravaStatus('取り込む活動を選択してください','warn'); return; }
+  if(!confirm(`選択した ${selected.length} 件を取り込みます。先にJSONバックアップを書き出すことを強く推奨します。\n\nOKでバックアップを書き出してから次の確認へ進みます。`)) return;
+  try{ exportRunosBackup('runos-before-strava-import'); }catch(err){ console.warn('[RunOS Strava] backup export failed',err); }
+  if(!confirm('バックアップのダウンロード開始を確認してから実行してください。\n\nStrava活動をRunOSへ取り込みますか？')) return;
+  const beforeActivities=(DB.activities||[]).slice();
+  const beforeIntegrations=JSON.parse(JSON.stringify(DB.integrations||{}));
+  let added=0,skipped=0,dups=0,failed=0;
+  const seen=new Set();
+  selected.forEach(i=>{
+    const p=STRAVA_ACTIVITY_PREVIEWS[i];
+    if(!p||!p.importable){ skipped++; return; }
+    const dup=findStravaDuplicate(p);
+    if(dup){ dups++; return; }
+    const ext=stravaExternalId(p);
+    if(ext&&seen.has(ext)){ dups++; return; }
+    const act=stravaPreviewToActivity(p);
+    if(!act){ failed++; return; }
+    if(ext) seen.add(ext);
+    DB.activities.push(act); added++;
+  });
+  if(!added){ DB.activities=beforeActivities; stravaStatus(`取り込み対象なし（重複 ${dups}件 / スキップ ${skipped}件 / 失敗 ${failed}件）`,'warn'); renderStravaActivities({previews:STRAVA_ACTIVITY_PREVIEWS}); return; }
+  DB.activities.sort((a,b)=>a.date<b.date?-1:1);
+  DB.integrations=DB.integrations||{};
+  DB.integrations.stravaApi={...(DB.integrations.stravaApi||{}),lastImport:todayISO(),imported:((DB.integrations.stravaApi&&DB.integrations.stravaApi.imported)||0)+added};
+  const saved=save();
+  if(!saved){
+    DB.activities=beforeActivities;
+    DB.integrations=beforeIntegrations;
+    stravaStatus(saveFailureText(),'error');
+    renderStravaActivities({previews:STRAVA_ACTIVITY_PREVIEWS});
+    return;
+  }
+  stravaStatus(`取り込み完了: ${added}件 / 重複スキップ ${dups}件 / スキップ ${skipped}件 / 失敗 ${failed}件`,'ok');
+  flash(`Strava: ${added}件取り込みました`);
+  renderStravaActivities({previews:STRAVA_ACTIVITY_PREVIEWS});
+}
+function wireStravaImportUI(){
+  const b=el('stravaExportBackup'); if(b) b.onclick=()=>{ try{ exportRunosBackup('runos-before-strava-import'); stravaStatus('バックアップを書き出しました','ok'); }catch(err){ stravaStatus('バックアップ書き出しに失敗しました','error'); } };
+  const i=el('stravaImportSelected'); if(i) i.onclick=importSelectedStravaActivities;
+}
+function wireStravaWorkerUI(){
+  const input=el('stravaWorkerUrl'); if(input) input.value=getStravaWorkerUrl();
+  const saveBtn=el('stravaWorkerSave');
+  if(saveBtn) saveBtn.onclick=()=>{
+    try{
+      const r=saveStravaWorkerUrl(input.value);
+      if(r.ok) stravaStatus('Worker URLを保存しました（meridian.v1には保存していません）','ok');
+      else stravaStatus('Worker URLを保存できませんでした。このセッションでは入力値を使います。','warn');
+      if(input) input.value=r.url;
+    }catch(err){ stravaStatus(err.message,'error'); }
+  };
+  const startBtn=el('stravaAuthStart');
+  if(startBtn) startBtn.onclick=()=>{
+    try{
+      const base=normalizeStravaWorkerUrl(input.value);
+      const w=window.open(base+'/auth/start','_blank','noopener');
+      if(w) stravaStatus('Strava認可タブを開きました。接続後にこの画面へ戻り「接続確認」を押してください。','info');
+      else stravaStatus('ポップアップがブロックされました。Worker URL + /auth/start を直接開いてください。','warn');
+    }catch(err){ stravaStatus(err.message,'error'); }
+  };
+  const athleteBtn=el('stravaCheckAthlete');
+  if(athleteBtn) athleteBtn.onclick=async()=>{
+    stravaStatus('接続状態を確認中…','info');
+    try{ const data=await stravaFetch('/athlete'); renderStravaAthlete(data); stravaStatus('Strava接続を確認しました','ok'); }
+    catch(err){ stravaStatus(stravaErrorMessage(err),'error'); }
+  };
+  const actsBtn=el('stravaFetchActivities');
+  if(actsBtn) actsBtn.onclick=async()=>{
+    stravaStatus('活動を取得中…','info');
+    try{ const data=await stravaFetch('/activities?page=1&per_page=30'); renderStravaActivities(data); stravaStatus(`活動プレビューを取得しました（${data.importableCount||0}件候補）`,'ok'); }
+    catch(err){ stravaStatus(stravaErrorMessage(err),'error'); }
+  };
+}
+
 function renderSettings(){
   const p=DB.profile;
   el('view-settings').innerHTML=`
@@ -2513,6 +2750,21 @@ function renderSettings(){
           <div class="shoe-brand">${IMPORT_ADAPTERS.strava_api.note}</div></div></div>
       </div>
       <input type="file" id="stravaCsvFile" accept=".csv,text/csv" style="display:none">
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line-soft)">
+        <h3>Strava連携 <span class="hint" style="font-weight:400">· Worker経由・手動選択インポート</span></h3>
+        <div class="hint" style="margin-bottom:10px">Strava tokenはWorker側KVで扱います。選択した活動だけを既存save()経由で保存し、<span class="mono">meridian.v1</span> へ直接書き込みません。</div>
+        <div class="field"><label>Strava Worker URL（別localStorageキーに保存）</label><input id="stravaWorkerUrl" value="${escapeHTML(getStravaWorkerUrl())}" autocomplete="off" inputmode="url"></div>
+        <div class="row-actions" style="margin-top:10px">
+          <button class="btn ghost" id="stravaWorkerSave">URL保存</button>
+          <button class="btn" id="stravaAuthStart">接続開始</button>
+          <button class="btn ghost" id="stravaCheckAthlete">接続確認</button>
+          <button class="btn ghost" id="stravaFetchActivities">活動取得</button>
+        </div>
+        <div id="stravaWorkerStatus" class="hint" style="margin-top:10px">未確認。接続開始後、Strava認可を完了してから接続確認してください。</div>
+        <div id="stravaAthleteBox" style="margin-top:12px"></div>
+        <div id="stravaActivitiesBox" style="margin-top:12px"></div>
+        <div class="hint" style="margin-top:10px">自動同期ではありません。活動取得後にチェックしたランニング活動だけを取り込みます。</div>
+      </div>
     </div>
     <div class="card gb" data-gb="reconcile" style="margin-top:16px">
       <h3>レース結果・自己ベスト <span class="hint" style="font-weight:400">· 走力の最優先アンカー</span></h3>
@@ -2552,9 +2804,7 @@ function renderSettings(){
       experience:el('p-exp').value, vo2maxLab:gf('p-vo2lab'), injuryProne:el('p-injury').checked,
       thresholdPaceSec: t.length===2? t[0]*60+t[1] : 255 };
     notifySaveResult(save(),'プロフィールを保存しました'); renderToday(); };
-  el('exportBtn').onclick=()=>{ const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'}); const fname='runos-backup-'+todayISO()+'.json';
-    const u=URL.createObjectURL(blob); const a=document.createElement('a');
-    a.href=u; a.download=fname; a.click(); URL.revokeObjectURL(u); };
+  el('exportBtn').onclick=()=>exportRunosBackup();
   el('csvBtn').onclick=()=>{
     const head='date,type,km,durSec,pace_sec_per_km,hrAvg,hrMax,avgPwr,cadence,elevM,decoupling,TRIMP\n';
     const lines=DB.activities.map(a=>[a.date,a.type,round(a.km,2),Math.round(a.durSec),Math.round(a.durSec/a.km),
@@ -2577,7 +2827,8 @@ function renderSettings(){
     const sf=el('stravaCsvFile'); if(sf) sf.onchange=e=>{ const f=e.target.files[0]; if(!f)return;
       const r=new FileReader(); r.onload=()=>{ const res=importStravaCSV(r.result);
         if(res.error) flash(res.error); else { notifySaveResult(res.saved,`Strava: ${res.added}件取込 (${res.skipped}件スキップ)`); route(); } };
-      r.readAsText(f); }; }
+      r.readAsText(f); };
+    wireStravaWorkerUI(); }
   { const rb=el('raceAddBtn'); if(rb) rb.onclick=()=>{
       const parts=el('race-time').value.trim().split(':').map(Number);
       if(parts.some(isNaN)||!parts.length){ alert('タイムを h:mm:ss か mm:ss で入力してください'); return; }

@@ -3,7 +3,7 @@
 最終確認日: 2026-07-10  
 対象: RunOS Legacy PWA / Cloudflare Worker / Strava API
 
-この文書は、RunOS Legacy PWAからStrava活動を安全に取得するための設計メモです。現時点ではCloudflare Worker側のStrava OAuth本接続までを対象とし、RunOS HTML変更、活動インポートUI、`meridian.v1` への書き込みは行いません。
+この文書は、RunOS Legacy PWAからStrava活動を安全に取得し、ユーザーが選択した活動だけを手動インポートするための設計メモです。現時点では自動同期、`activity:read_all`、大量詳細データ取得、バックグラウンド取り込みは行いません。
 
 参照元:
 
@@ -201,25 +201,34 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 
 注意:
 
-- 現行 `meridian.v1` の活動形状にはStrava id用の安定フィールドがない
+- 既存の古い活動にはStrava id用の安定フィールドがない
+- 新しくStrava APIから取り込む活動には `externalId` 等を付与する
 - そのため、最初から自動重複除外だけで確定インポートしない
 - プレビューで「既存候補あり」と表示し、ユーザー確認後にだけインポートする
 
-## 11. `meridian.v1` への書き込み方針
+## 11. RunOS側UIと `meridian.v1` への書き込み方針
 
-初期段階:
+現在の実装:
 
 - Workerは `meridian.v1` を知らない
-- PWA/HTMLもWorker結果を受けて即保存しない
-- `/activities` はプレビュー用JSONだけを返す
-- 取り込み候補、重複候補、スキップ理由を表示する
+- RunOS HTMLは `/activities` のpreviewを表示し、ユーザーが選択した活動だけを取り込む
+- RunOS側UIはWorker URL設定、接続開始、接続確認、活動取得、選択チェックボックス、手動インポートを提供する
+- Worker URLは `runos.stravaWorkerUrl.v1` という別localStorageキーに保存し、`meridian.v1` には保存しない
+- importable=false の活動は選択不可
+- 重複候補は「重複の可能性あり」と表示し、初期状態では選択しない
+- exact duplicate（`externalId` / `sourceId` / `stravaActivityId` が一致）は取り込み済みとして扱い、再取り込みしない
+- 近似duplicateは日付または開始時刻、距離差2%以内、時間差2%以内で判定する
+- インポート前にJSONバックアップ書き出し導線と確認ダイアログを出す
+- 選択された活動だけを `DB.activities` へ追加し、保存は既存 `save()` 経由で行う
+- `save()` がfalseの場合は成功通知を出さず、メモリ上の追加もロールバックする
+- 取り込む活動には `source: "strava_api"`、`externalId: "strava:<id>"`、`sourceId`、`stravaActivityId`、`sourceName`、`startDateLocal`、`importedAt` を付け、Strava由来と分かるようにする
+- `refresh_token` / `access_token` / `client_secret` はRunOS HTMLやlocalStorageへ保存しない
 
 将来段階:
 
-- ユーザーが明示的に「インポート」を押した場合のみRunOS活動へ変換する
-- 保存前にバックアップ書き出し導線を出す
-- `save()` の戻り値を確認し、失敗時は成功通知を出さない
-- 破損リカバリ中は既存方針どおり保存をブロックする
+- `activity:read_all` を使う場合は、非公開活動を含むことをUIで明示してから要求する
+- 自動同期を行う場合も、初回はプレビューとバックアップ導線を維持する
+- `externalId` を使った重複判定を維持し、Strava活動の再取り込みを防ぐ
 
 ## 12. Strava API利用上の注意
 
@@ -233,7 +242,7 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 - token、認可コード、Authorization headerをconsoleやレスポンスへ出さない
 - Stravaの仕様変更に備え、WorkerでAPIレスポンスを正規化してからPWAへ渡す
 
-## 13. WorkerモックAPI
+## 13. Worker API
 
 作成場所:
 
@@ -241,7 +250,7 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 workers/runos-strava-worker
 ```
 
-モックendpoint:
+endpoint:
 
 | endpoint | 概要 |
 |---|---|
@@ -254,7 +263,9 @@ workers/runos-strava-worker
 現在の制約:
 
 - `activity:read_all` はまだ要求しない
-- `meridian.v1` へ書き込まない
+- RunOS側は自動同期しない
+- 選択された活動以外は保存しない
+- `meridian.v1` へ直接localStorage書き込みせず、既存 `save()` 経由に限定する
 - CORSは `RUNOS_LEGACY_PWA_ORIGIN` と `LOCAL_DEV_ORIGINS` のみ許可する
 - その他のOriginからのブラウザアクセスは403にする
 
@@ -262,6 +273,6 @@ workers/runos-strava-worker
 
 1. KV namespace IDを `wrangler.toml` に設定し、WorkerをCloudflareへデプロイする
 2. `/auth/start` からStrava認可し、callback後に `/athlete` と `/activities` を確認する
-3. RunOS Legacy PWAからWorker URLを手入力して `/activities` をプレビュー表示する最小UIを検討する
-4. `meridian.v1` へ書く前のStravaインポート候補JSON fixtureをdocsに固定する
+3. Strava取り込み済み活動を含む `meridian.v1` fixtureを作り、重複判定の代表ケースをdocsに固定する
+4. インポート後の手動編集・削除・再取得時の表示確認を追加する
 5. `activity:read_all` を明示選択にするUIと説明文を設計する
