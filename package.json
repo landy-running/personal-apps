@@ -12,6 +12,8 @@
     "preview:runos": "vite preview --config apps/runos-pwa/vite.config.ts",
     "preview:wanoku": "vite preview --config apps/wanoku-pwa/vite.config.ts",
     "preview:runos-legacy": "vite preview --outDir dist/runos-legacy-pwa",
+    "worker:runos-strava:dev": "npx wrangler dev --config workers/runos-strava-worker/wrangler.toml",
+    "worker:runos-strava:deploy": "npx wrangler deploy --config workers/runos-strava-worker/wrangler.toml",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

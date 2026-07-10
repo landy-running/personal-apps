@@ -69,6 +69,8 @@ Cloudflare Worker側で扱う環境変数:
 | `STRAVA_CLIENT_SECRET` | secret | token交換・refreshに使うsecret | 禁止 |
 | `STRAVA_REDIRECT_URI` | 環境変数 | Stravaから戻るWorker callback URL | PWAに置く必要なし |
 | `TOKEN_STORAGE` | 環境変数 | token保存方式の切替。初期は `mock` | PWAに置く必要なし |
+| `RUNOS_LEGACY_PWA_ORIGIN` | 環境変数 | CORSで許可するRunOS Legacy PWA公開URL | PWAに置く必要なし |
+| `LOCAL_DEV_ORIGINS` | 環境変数 | CORSで許可するlocalhost開発URL | PWAに置く必要なし |
 
 `STRAVA_CLIENT_SECRET` は `wrangler.toml` やソースコードへ書かず、Cloudflare Dashboardまたは `wrangler secret put STRAVA_CLIENT_SECRET` で設定する。
 
@@ -255,7 +257,8 @@ workers/runos-strava-worker
 - Strava本接続はしない
 - tokenを発行・保存しない
 - `meridian.v1` へ書き込まない
-- CORSはモック確認用に緩くしているため、本番接続前にRunOS Pages originへ制限する
+- CORSは `RUNOS_LEGACY_PWA_ORIGIN` と `LOCAL_DEV_ORIGINS` のみ許可する
+- その他のOriginからのブラウザアクセスは403にする
 
 ## 14. 次の小さな作業候補
 

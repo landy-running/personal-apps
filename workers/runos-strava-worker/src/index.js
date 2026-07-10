@@ -1,5 +1,11 @@
 const DEFAULT_SCOPE = "activity:read";
 const ALLOWED_SCOPES = new Set(["activity:read", "activity:read_all"]);
+const DEFAULT_LOCAL_DEV_ORIGINS = [
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173"
+];
 
 const MOCK_STRAVA_ACTIVITIES = [
   {
@@ -47,21 +53,47 @@ const MOCK_STRAVA_ACTIVITIES = [
   }
 ];
 
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400"
-  };
+function splitOrigins(value) {
+  return String(value || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 }
 
-function json(payload, init = {}) {
+function getAllowedOrigins(env) {
+  return new Set([
+    ...splitOrigins(env.RUNOS_LEGACY_PWA_ORIGIN),
+    ...splitOrigins(env.LOCAL_DEV_ORIGINS || DEFAULT_LOCAL_DEV_ORIGINS.join(","))
+  ]);
+}
+
+function corsHeaders(request, env) {
+  const origin = request.headers.get("Origin");
+  const headers = {
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+    "Vary": "Origin"
+  };
+
+  if (origin && getAllowedOrigins(env).has(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+  }
+
+  return headers;
+}
+
+function isCorsAllowed(request, env) {
+  const origin = request.headers.get("Origin");
+  return !origin || getAllowedOrigins(env).has(origin);
+}
+
+function json(request, env, payload, init = {}) {
   return new Response(JSON.stringify(payload, null, 2), {
     ...init,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      ...corsHeaders(),
+      ...corsHeaders(request, env),
       ...(init.headers || {})
     }
   });
@@ -72,7 +104,9 @@ function envStatus(env) {
     clientIdConfigured: Boolean(env.STRAVA_CLIENT_ID),
     clientSecretConfigured: Boolean(env.STRAVA_CLIENT_SECRET),
     redirectUriConfigured: Boolean(env.STRAVA_REDIRECT_URI),
-    tokenStorage: env.TOKEN_STORAGE || "mock"
+    tokenStorage: env.TOKEN_STORAGE || "mock",
+    runosLegacyPwaOriginConfigured: Boolean(env.RUNOS_LEGACY_PWA_ORIGIN),
+    allowedOrigins: [...getAllowedOrigins(env)]
   };
 }
 
@@ -199,17 +233,27 @@ function filterMockActivities(request) {
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders() });
+      return new Response(null, {
+        status: isCorsAllowed(request, env) ? 204 : 403,
+        headers: corsHeaders(request, env)
+      });
     }
 
     const url = new URL(request.url);
 
+    if (!isCorsAllowed(request, env)) {
+      return json(request, env, {
+        error: "cors_forbidden",
+        message: "This origin is not allowed for the RunOS Strava Worker."
+      }, { status: 403 });
+    }
+
     if (request.method !== "GET") {
-      return json({ error: "method_not_allowed" }, { status: 405 });
+      return json(request, env, { error: "method_not_allowed" }, { status: 405 });
     }
 
     if (url.pathname === "/health") {
-      return json({
+      return json(request, env, {
         ok: true,
         service: "runos-strava-worker",
         mock: true,
@@ -218,11 +262,11 @@ export default {
     }
 
     if (url.pathname === "/auth/start") {
-      return json(buildAuthStartResponse(request, env));
+      return json(request, env, buildAuthStartResponse(request, env));
     }
 
     if (url.pathname === "/auth/callback") {
-      return json({
+      return json(request, env, {
         mock: true,
         message: "Callback received. Token exchange is intentionally not implemented yet.",
         hasCode: Boolean(url.searchParams.get("code")),
@@ -237,7 +281,7 @@ export default {
       const page = filterMockActivities(request);
       const previews = page.activities.map(toRunOsPreview);
 
-      return json({
+      return json(request, env, {
         mock: true,
         source: "strava_api_mock",
         note: "No Strava request is made. Do not write this response to meridian.v1 without a user confirmation step.",
@@ -253,7 +297,7 @@ export default {
       });
     }
 
-    return json({
+    return json(request, env, {
       error: "not_found",
       endpoints: ["/health", "/auth/start", "/auth/callback", "/activities"]
     }, { status: 404 });
