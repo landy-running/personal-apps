@@ -1,0 +1,18 @@
+{
+  "name": "RunOS Legacy",
+  "short_name": "RunOS",
+  "description": "RunOS v100 legacy single HTML packaged as a PWA.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#0b0e15",
+  "background_color": "#0b0e15",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

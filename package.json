@@ -5,11 +5,13 @@
   "scripts": {
     "dev:runos": "vite --config apps/runos-pwa/vite.config.ts",
     "dev:wanoku": "vite --config apps/wanoku-pwa/vite.config.ts",
-    "build": "npm run typecheck && npm run build:runos && npm run build:wanoku",
+    "build": "npm run typecheck && npm run build:runos && npm run build:wanoku && npm run build:runos-legacy",
     "build:runos": "vite build --config apps/runos-pwa/vite.config.ts",
     "build:wanoku": "vite build --config apps/wanoku-pwa/vite.config.ts",
+    "build:runos-legacy": "node apps/runos-legacy-pwa/scripts/build.mjs",
     "preview:runos": "vite preview --config apps/runos-pwa/vite.config.ts",
     "preview:wanoku": "vite preview --config apps/wanoku-pwa/vite.config.ts",
+    "preview:runos-legacy": "vite preview --outDir dist/runos-legacy-pwa",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

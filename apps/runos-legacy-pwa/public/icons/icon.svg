@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RunOS">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0e15"/>
+      <stop offset="1" stop-color="#143b3f"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#20d6b5"/>
+      <stop offset="1" stop-color="#7cf7d4"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <path d="M112 322c54-88 92-88 146 0s92 88 146 0" fill="none" stroke="url(#line)" stroke-width="36" stroke-linecap="round"/>
+  <path d="M112 226c54-88 92-88 146 0s92 88 146 0" fill="none" stroke="#ffffff" stroke-opacity=".82" stroke-width="28" stroke-linecap="round"/>
+  <text x="256" y="418" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="58" font-weight="800" fill="#f6fffc">RunOS</text>
+</svg>
