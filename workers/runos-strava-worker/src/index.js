@@ -1,4 +1,5 @@
-const DEFAULT_SCOPE = "activity:read";
+const DEFAULT_SCOPE = "activity:read,read";
+const PRIVATE_SCOPE = "activity:read_all,read";
 const TOKEN_KV_KEY = "runos:strava:token:primary";
 const STATE_PREFIX = "runos:strava:oauth-state:";
 const STATE_TTL_SECONDS = 10 * 60;
@@ -144,12 +145,20 @@ function stravaError(status, body) {
   };
 }
 
-function hasActivityReadScope(scope) {
-  const scopes = String(scope || "")
+function parseScope(scope) {
+  return String(scope || "")
     .split(/[,\s]+/)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function hasActivityReadScope(scope) {
+  const scopes = parseScope(scope);
   return scopes.includes("activity:read") || scopes.includes("activity:read_all");
+}
+
+function hasActivityReadAllScope(scope) {
+  return parseScope(scope).includes("activity:read_all");
 }
 
 async function loadToken(kv) {
@@ -182,6 +191,7 @@ function publicConnectionInfo(token) {
     connected: true,
     athleteId: token.athlete?.id || null,
     scope: token.scope || "",
+    hasActivityReadAll: hasActivityReadAllScope(token.scope),
     expiresAt: token.expires_at || null,
     connectedAt: token.connectedAt || null,
     updatedAt: token.updatedAt || null
@@ -288,13 +298,25 @@ async function consumeOauthState(kv, state) {
   return payload;
 }
 
-function buildAuthorizeUrl(env, state) {
+function buildAuthRequest(url) {
+  const requestedScope = url.searchParams.get("scope") || "";
+  const includePrivate = url.searchParams.get("include_private") === "1"
+    || hasActivityReadAllScope(requestedScope);
+
+  return {
+    includePrivate,
+    scope: includePrivate ? PRIVATE_SCOPE : DEFAULT_SCOPE,
+    approvalPrompt: includePrivate ? "force" : "auto"
+  };
+}
+
+function buildAuthorizeUrl(env, state, authRequest) {
   const authorizationUrl = new URL(STRAVA_AUTHORIZE_URL);
   authorizationUrl.searchParams.set("client_id", env.STRAVA_CLIENT_ID);
   authorizationUrl.searchParams.set("redirect_uri", env.STRAVA_REDIRECT_URI);
   authorizationUrl.searchParams.set("response_type", "code");
-  authorizationUrl.searchParams.set("approval_prompt", "auto");
-  authorizationUrl.searchParams.set("scope", DEFAULT_SCOPE);
+  authorizationUrl.searchParams.set("approval_prompt", authRequest.approvalPrompt);
+  authorizationUrl.searchParams.set("scope", authRequest.scope);
   authorizationUrl.searchParams.set("state", state);
   return authorizationUrl;
 }
@@ -420,13 +442,16 @@ async function handleAuthStart(request, env) {
   const kv = requireTokenKv(env);
   if (!kv) return tokenStorageError(request, env);
 
+  const url = new URL(request.url);
+  const authRequest = buildAuthRequest(url);
   const state = crypto.randomUUID();
   await saveOauthState(kv, state, {
-    scope: DEFAULT_SCOPE,
+    scope: authRequest.scope,
+    includePrivate: authRequest.includePrivate,
     createdAt: new Date().toISOString()
   });
 
-  return Response.redirect(buildAuthorizeUrl(env, state).toString(), 302);
+  return Response.redirect(buildAuthorizeUrl(env, state, authRequest).toString(), 302);
 }
 
 async function handleAuthCallback(request, env) {
@@ -457,8 +482,9 @@ async function handleAuthCallback(request, env) {
 
   try {
     const tokenResponse = await exchangeAuthorizationCode(env, code);
+    const acceptedScope = tokenResponse.scope || grantedScope || "";
     const token = sanitizeTokenForStorage(tokenResponse, {
-      scope: tokenResponse.scope || grantedScope
+      scope: acceptedScope
     });
 
     if (!token.access_token || !token.refresh_token || !token.expires_at) {
@@ -494,6 +520,7 @@ async function handleAthlete(request, env) {
       connected: true,
       athlete: result.body,
       scope: current?.scope || "",
+      hasActivityReadAll: hasActivityReadAllScope(current?.scope || ""),
       expiresAt: current?.expires_at || null,
       rateLimit: result.rateLimit
     });
@@ -523,6 +550,7 @@ async function handleActivities(request, env) {
       note: "Do not write this response to meridian.v1 without a user confirmation step.",
       connected: true,
       scope: token?.scope || "",
+      hasActivityReadAll: hasActivityReadAllScope(token?.scope || ""),
       paging: {
         page: params.page,
         perPage: params.perPage,

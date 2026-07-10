@@ -2391,6 +2391,8 @@ const STRAVA_PER_PAGE=30;
 let STRAVA_ACTIVITY_PREVIEWS=[];
 let STRAVA_SELECTED_IDS=new Set();
 let STRAVA_PAGING={page:0,perPage:STRAVA_PER_PAGE,hasMore:false,loading:false,reachedEnd:false};
+let STRAVA_SCOPE='';
+let STRAVA_HAS_READ_ALL=false;
 function escapeHTML(v){ return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function exportRunosBackup(prefix='runos-backup'){
   const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
@@ -2443,6 +2445,18 @@ async function stravaFetch(path){
 function stravaAthleteName(a){
   if(!a) return '—';
   return [a.firstname,a.lastname].filter(Boolean).join(' ') || a.username || (a.id?`Athlete ${a.id}`:'—');
+}
+function stravaScopeHasReadAll(scope){
+  return String(scope||'').split(/[,\s]+/).map(x=>x.trim()).filter(Boolean).includes('activity:read_all');
+}
+function updateStravaScopeState(data){
+  if(!data) return;
+  if(data.scope!=null) STRAVA_SCOPE=String(data.scope||'');
+  STRAVA_HAS_READ_ALL=!!data.hasActivityReadAll||stravaScopeHasReadAll(STRAVA_SCOPE);
+}
+function stravaScopeNoticeHtml(){
+  if(STRAVA_HAS_READ_ALL) return '<div class="hint" style="color:var(--teal);margin-top:6px">activity:read_all が許可されています。Only You活動も取得対象です。</div>';
+  return '<div class="hint" style="color:var(--gold);margin-top:6px">現在のscopeではOnly You活動は表示されない可能性があります。必要な場合は「非公開活動も取得するため再接続」を実行してください。</div>';
 }
 function stravaExternalId(preview){
   const raw=preview&&preview.rawSummary||{};
@@ -2511,6 +2525,27 @@ function stravaSelectionStats(){
   });
   return stats;
 }
+function stravaLargestDateGap(){
+  const dates=STRAVA_ACTIVITY_PREVIEWS.map(p=>{
+    const a=p&&p.runosActivity||{}, raw=p&&p.rawSummary||{};
+    const iso=a.date||String(raw.start_date_local||raw.start_date||'').slice(0,10);
+    const ms=Date.parse(iso);
+    return Number.isFinite(ms)?{iso,ms}:null;
+  }).filter(Boolean).sort((a,b)=>b.ms-a.ms);
+  let best=null;
+  for(let i=0;i<dates.length-1;i++){
+    const days=Math.floor((dates[i].ms-dates[i+1].ms)/86400000);
+    if(days>45&&(!best||days>best.days)) best={days,newer:dates[i].iso,older:dates[i+1].iso};
+  }
+  return best;
+}
+function stravaDiagnosticsHtml(){
+  const notes=[];
+  if(!STRAVA_HAS_READ_ALL) notes.push('Only You活動は activity:read_all がないと表示されない可能性があります。');
+  const gap=stravaLargestDateGap();
+  if(gap) notes.push(`取得結果に大きな日付ギャップがあります（${gap.newer} → ${gap.older}、約${gap.days}日）。この期間にStrava上の活動があるのに表示されない場合、非公開活動の取得権限が不足している可能性があります。`);
+  return notes.length?`<div class="hint" id="stravaActivityDiagnostics" style="color:var(--gold);margin-top:8px">${notes.map(escapeHTML).join('<br>')}</div>`:'<div class="hint" id="stravaActivityDiagnostics" style="margin-top:8px">取得診断: scopeと日付ギャップに目立つ警告はありません。</div>';
+}
 function updateStravaSelectionSummary(){
   const s=stravaSelectionStats();
   const box=el('stravaSelectionSummary');
@@ -2541,16 +2576,20 @@ function wireStravaSelectionControls(){
 }
 function renderStravaAthlete(data){
   const box=el('stravaAthleteBox'); if(!box) return;
+  updateStravaScopeState(data);
   const a=data&&data.athlete;
   box.innerHTML=`<div class="inputs">
     <div class="row"><span class="l">接続状態</span><span class="r" style="color:var(--teal)">接続中</span></div>
     <div class="row"><span class="l">アスリート</span><span class="r">${escapeHTML(stravaAthleteName(a))}</span></div>
     <div class="row"><span class="l">Scope</span><span class="r mono">${escapeHTML(data.scope||'—')}</span></div>
+    <div class="row"><span class="l">非公開活動</span><span class="r" style="color:${STRAVA_HAS_READ_ALL?'var(--teal)':'var(--gold)'}">${STRAVA_HAS_READ_ALL?'取得可能':'権限なし'}</span></div>
   </div>
+  ${stravaScopeNoticeHtml()}
   <div class="hint" style="margin-top:6px">access_token / refresh_token はWorker側KVにのみ保存され、この画面には表示しません。</div>`;
 }
 function renderStravaActivities(data,opts={}){
   const box=el('stravaActivitiesBox'); if(!box) return;
+  updateStravaScopeState(data);
   if(data&&Array.isArray(data.previews)){
     mergeStravaPreviews(data.previews,!opts.append);
     const pg=data.paging||{};
@@ -2561,8 +2600,9 @@ function renderStravaActivities(data,opts={}){
     STRAVA_PAGING.reachedEnd=!STRAVA_PAGING.hasMore;
   }
   const previews=STRAVA_ACTIVITY_PREVIEWS;
-  if(!previews.length){ box.innerHTML='<div class="empty">活動がありません</div>'; return; }
+  if(!previews.length){ box.innerHTML=`<div class="empty">活動がありません</div>${stravaScopeNoticeHtml()}${stravaDiagnosticsHtml()}`; return; }
   box.innerHTML=`<div class="inputs" style="margin-bottom:10px"><div class="row"><span class="l">選択状態</span><span class="r mono" id="stravaSelectionSummary"></span></div></div>
+    ${stravaScopeNoticeHtml()}
     <div class="row-actions" style="margin-bottom:10px">
       <button class="btn ghost" id="stravaSelectAll">表示中の取込可能をすべて選択</button>
       <button class="btn ghost" id="stravaSelectSafe">重複候補を除いて選択</button>
@@ -2599,6 +2639,7 @@ function renderStravaActivities(data,opts={}){
       <button class="btn ghost" id="stravaExportBackup">バックアップを書き出し</button>
       <button class="btn" id="stravaImportSelected">選択した活動を取り込む</button>
     </div>
+    ${stravaDiagnosticsHtml()}
     <div class="hint" style="margin-top:8px">手動選択インポートです。選択した活動だけを既存save()経由で保存します。自動同期はしません。</div>`;
   wireStravaImportUI();
   wireStravaSelectionControls();
@@ -2702,10 +2743,24 @@ function wireStravaWorkerUI(){
       else stravaStatus('ポップアップがブロックされました。Worker URL + /auth/start を直接開いてください。','warn');
     }catch(err){ stravaStatus(err.message,'error'); }
   };
+  const privateBtn=el('stravaAuthPrivate');
+  if(privateBtn) privateBtn.onclick=()=>{
+    try{
+      if(!confirm('Only Youなどの非公開活動も取得するため、Stravaで activity:read_all を再認証します。tokenはWorker側KVにのみ保存され、RunOS HTMLやlocalStorageには保存しません。続行しますか？')) return;
+      const base=normalizeStravaWorkerUrl(input.value);
+      const w=window.open(base+'/auth/start?include_private=1','_blank','noopener');
+      if(w) stravaStatus('非公開活動取得用のStrava再認証タブを開きました。完了後に「接続確認」を押してください。','info');
+      else stravaStatus('ポップアップがブロックされました。Worker URL + /auth/start?include_private=1 を直接開いてください。','warn');
+    }catch(err){ stravaStatus(err.message,'error'); }
+  };
   const athleteBtn=el('stravaCheckAthlete');
   if(athleteBtn) athleteBtn.onclick=async()=>{
     stravaStatus('接続状態を確認中…','info');
-    try{ const data=await stravaFetch('/athlete'); renderStravaAthlete(data); stravaStatus('Strava接続を確認しました','ok'); }
+    try{
+      const data=await stravaFetch('/athlete');
+      renderStravaAthlete(data);
+      stravaStatus(STRAVA_HAS_READ_ALL?'Strava接続を確認しました（非公開活動の取得権限あり）':'Strava接続を確認しました。Only You活動は表示されない可能性があります','ok');
+    }
     catch(err){ stravaStatus(stravaErrorMessage(err),'error'); }
   };
   const actsBtn=el('stravaFetchActivities');
@@ -2851,6 +2906,7 @@ function renderSettings(){
         <div class="row-actions" style="margin-top:10px">
           <button class="btn ghost" id="stravaWorkerSave">URL保存</button>
           <button class="btn" id="stravaAuthStart">接続開始</button>
+          <button class="btn ghost" id="stravaAuthPrivate">非公開活動も取得するため再接続</button>
           <button class="btn ghost" id="stravaCheckAthlete">接続確認</button>
           <button class="btn ghost" id="stravaFetchActivities">活動取得</button>
         </div>

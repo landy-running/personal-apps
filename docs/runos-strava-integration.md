@@ -3,7 +3,7 @@
 最終確認日: 2026-07-10  
 対象: RunOS Legacy PWA / Cloudflare Worker / Strava API
 
-この文書は、RunOS Legacy PWAからStrava活動を安全に取得し、ユーザーが選択した活動だけを手動インポートするための設計メモです。現時点では自動同期、`activity:read_all`、大量詳細データ取得、バックグラウンド取り込みは行いません。
+この文書は、RunOS Legacy PWAからStrava活動を安全に取得し、ユーザーが選択した活動だけを手動インポートするための設計メモです。現時点では自動同期、大量詳細データ取得、バックグラウンド取り込みは行いません。`activity:read_all` は既定では要求せず、ユーザーが非公開活動取得を明示した再認証時だけ要求します。
 
 参照元:
 
@@ -46,8 +46,9 @@
    - `client_id`
    - `redirect_uri`
    - `response_type=code`
-   - `approval_prompt=auto`
-   - `scope=activity:read` または明示同意時のみ `activity:read_all`
+   - 既定は `approval_prompt=auto`
+   - 既定scopeは `activity:read,read`
+   - 非公開活動取得を明示した場合だけ `approval_prompt=force` と `scope=activity:read_all,read`
    - CSRF対策用 `state`
 3. ユーザーがStravaで認可する
 4. StravaがWorkerの `/auth/callback` へ戻す
@@ -118,9 +119,9 @@ Cloudflare Worker側で扱う環境変数:
 
 ## 7. 必要scope
 
-最初の実装候補:
+既定の実装:
 
-- `activity:read`
+- `activity:read,read`
 
 理由:
 
@@ -132,8 +133,11 @@ Cloudflare Worker側で扱う環境変数:
 
 - 非公開、Only You、privacy zoneを含む活動まで取得したい場合にだけ使う
 - 初期既定にはしない
-- UIで「非公開活動も取り込む」など明示的な説明と同意を出してから要求する
+- UIで「非公開活動も取得するため再接続」を押した場合だけ `include_private=1` 付きで `/auth/start` を開く
+- Workerは `include_private=1` または `scope=activity:read_all` を受けた場合だけ `activity:read_all,read` を要求する
+- scope追加時は `approval_prompt=force` を使い、Strava側で再同意しやすくする
 - callback時に実際に許可されたscopeを確認し、不足している場合は理由を表示する
+- `access_token` / `refresh_token` は引き続きWorker側KVにのみ保存し、PWA/HTML/localStorageへ返さない
 
 要求しないscope:
 
@@ -219,10 +223,14 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 - RunOS HTMLは `/activities` のpreviewを表示し、ユーザーが選択した活動だけを取り込む
 - RunOS側UIはWorker URL設定、接続開始、接続確認、活動取得、選択チェックボックス、手動インポートを提供する
 - Worker URLは `runos.stravaWorkerUrl.v1` という別localStorageキーに保存し、`meridian.v1` には保存しない
+- 接続確認結果では現在のscopeと `activity:read_all` の有無を表示する
+- `activity:read_all` がない場合は「Only You活動は表示されない可能性があります」と表示する
+- 「非公開活動も取得するため再接続」ボタンは `/auth/start?include_private=1` を新規タブで開く
 - 初回の「活動取得」は `page=1&per_page=30` を取得する
 - 「さらに読み込む」は次ページを取得し、既存一覧へ追記する
 - 取得済み一覧はStravaの `externalId`、または日付・距離・時間・名前のfallbackキーで重複追加しない
 - `returnedCount=0` または `hasMore=false` の場合は、これ以上読み込めない状態として表示する
+- 取得結果に大きな日付ギャップがある場合は、scope不足で非公開活動が抜けている可能性を診断表示する
 - 画面には表示件数、取込可能件数、選択件数、exact duplicate件数、近似duplicate件数、取り込み済み件数を表示する
 - 一括操作として「表示中の取込可能をすべて選択」「重複候補を除いて選択」「選択解除」を提供する
 - importable=false の活動は選択不可
@@ -267,15 +275,15 @@ endpoint:
 
 | endpoint | 概要 |
 |---|---|
-| `GET /health` | Workerの稼働状態と環境変数設定有無を返す |
-| `GET /auth/start` | Strava認可URLへredirectする。scopeは `activity:read` 固定 |
+| `GET /health` | Workerの稼働状態、環境変数設定有無、保存済みscope、`hasActivityReadAll` を返す |
+| `GET /auth/start` | Strava認可URLへredirectする。既定scopeは `activity:read,read`。`include_private=1` または `scope=activity:read_all` の場合だけ `activity:read_all,read` を要求する |
 | `GET /auth/callback` | codeをtoken endpointで交換し、tokenをKVへ保存する |
-| `GET /athlete` | 接続中アスリート情報を返す。tokenは返さない |
+| `GET /athlete` | 接続中アスリート情報、保存済みscope、`hasActivityReadAll` を返す。tokenは返さない |
 | `GET /activities` | Strava `/athlete/activities` とRunOSプレビュー候補を返す。`page`、`per_page` / `perPage` を受け付け、`page`、`perPage`、`returnedCount`、`hasMore` を返す |
 
 現在の制約:
 
-- `activity:read_all` はまだ要求しない
+- `activity:read_all` は明示再認証時だけ要求し、既定では要求しない
 - RunOS側は自動同期しない
 - 選択された活動以外は保存しない
 - `meridian.v1` へ直接localStorage書き込みせず、既存 `save()` 経由に限定する
@@ -288,4 +296,4 @@ endpoint:
 2. `/auth/start` からStrava認可し、callback後に `/athlete` と `/activities` を確認する
 3. Strava取り込み済み活動を含む `meridian.v1` fixtureを作り、重複判定の代表ケースをdocsに固定する
 4. インポート後の手動編集・削除・再取得時の表示確認を追加する
-5. `activity:read_all` を明示選択にするUIと説明文を設計する
+5. `activity:read_all` 再認証後に、2026-05-30〜2024-12-19 のような欠落期間が埋まるか実機で確認する
