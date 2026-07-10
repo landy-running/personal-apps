@@ -155,6 +155,7 @@ GET https://www.strava.com/api/v3/athlete/activities
 - `before`
 - `page`
 - `per_page`
+- `perPage`（RunOS側互換エイリアス。Worker内では `per_page` に正規化する）
 
 方針:
 
@@ -162,6 +163,10 @@ GET https://www.strava.com/api/v3/athlete/activities
 - streams、laps、zonesなど重い詳細取得はまだ行わない
 - `after` を使い、直近期間から段階取得する
 - `page` と `per_page` でページングする
+- 既定は `page=1`、`per_page=30`
+- `per_page` はWorker側で安全な上限までclampする
+- Workerレスポンスには `page`、`perPage`、`returnedCount`、`hasMore` 相当を含める
+- `hasMore` は「さらに取得できる可能性」を示す補助値であり、最終ページ確定は次ページ取得結果でも確認する
 - Stravaのrate limit headerをWorker側で読み、PWAへ要約して返す
 - `429 Too Many Requests` は通常エラーとして扱い、再試行を急がせない
 - Strava API失敗時もRunOS本体の既存データは変更しない
@@ -214,8 +219,16 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 - RunOS HTMLは `/activities` のpreviewを表示し、ユーザーが選択した活動だけを取り込む
 - RunOS側UIはWorker URL設定、接続開始、接続確認、活動取得、選択チェックボックス、手動インポートを提供する
 - Worker URLは `runos.stravaWorkerUrl.v1` という別localStorageキーに保存し、`meridian.v1` には保存しない
+- 初回の「活動取得」は `page=1&per_page=30` を取得する
+- 「さらに読み込む」は次ページを取得し、既存一覧へ追記する
+- 取得済み一覧はStravaの `externalId`、または日付・距離・時間・名前のfallbackキーで重複追加しない
+- `returnedCount=0` または `hasMore=false` の場合は、これ以上読み込めない状態として表示する
+- 画面には表示件数、取込可能件数、選択件数、exact duplicate件数、近似duplicate件数、取り込み済み件数を表示する
+- 一括操作として「表示中の取込可能をすべて選択」「重複候補を除いて選択」「選択解除」を提供する
 - importable=false の活動は選択不可
+- exact duplicateは常に選択不可
 - 重複候補は「重複の可能性あり」と表示し、初期状態では選択しない
+- 近似duplicateは初期状態では選択しないが、ユーザーが明示的にチェックした場合はインポート対象にできる
 - exact duplicate（`externalId` / `sourceId` / `stravaActivityId` が一致）は取り込み済みとして扱い、再取り込みしない
 - 近似duplicateは日付または開始時刻、距離差2%以内、時間差2%以内で判定する
 - インポート前にJSONバックアップ書き出し導線と確認ダイアログを出す
@@ -258,7 +271,7 @@ endpoint:
 | `GET /auth/start` | Strava認可URLへredirectする。scopeは `activity:read` 固定 |
 | `GET /auth/callback` | codeをtoken endpointで交換し、tokenをKVへ保存する |
 | `GET /athlete` | 接続中アスリート情報を返す。tokenは返さない |
-| `GET /activities` | Strava `/athlete/activities` とRunOSプレビュー候補を返す |
+| `GET /activities` | Strava `/athlete/activities` とRunOSプレビュー候補を返す。`page`、`per_page` / `perPage` を受け付け、`page`、`perPage`、`returnedCount`、`hasMore` を返す |
 
 現在の制約:
 

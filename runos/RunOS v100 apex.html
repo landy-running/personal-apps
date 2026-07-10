@@ -2387,7 +2387,10 @@ function renderInsights(){
 /* ---- Strava Worker preview UI (does not write meridian.v1) ---- */
 const STRAVA_WORKER_URL_KEY='runos.stravaWorkerUrl.v1';
 const DEFAULT_STRAVA_WORKER_URL='https://runos-strava-worker.mtk0808.workers.dev';
+const STRAVA_PER_PAGE=30;
 let STRAVA_ACTIVITY_PREVIEWS=[];
+let STRAVA_SELECTED_IDS=new Set();
+let STRAVA_PAGING={page:0,perPage:STRAVA_PER_PAGE,hasMore:false,loading:false,reachedEnd:false};
 function escapeHTML(v){ return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function exportRunosBackup(prefix='runos-backup'){
   const blob=new Blob([JSON.stringify(DB,null,2)],{type:'application/json'});
@@ -2445,6 +2448,12 @@ function stravaExternalId(preview){
   const raw=preview&&preview.rawSummary||{};
   return preview&&preview.externalId ? String(preview.externalId) : (raw.id!=null?`strava:${raw.id}`:null);
 }
+function stravaPreviewKey(preview){
+  const ext=stravaExternalId(preview);
+  if(ext) return ext;
+  const a=preview&&preview.runosActivity||{}, raw=preview&&preview.rawSummary||{};
+  return [a.date||raw.start_date_local||raw.start_date||'',a.km||raw.distance||'',a.durSec||raw.moving_time||'',a.note||raw.name||''].join('|');
+}
 function stravaStartMs(preview){
   const raw=preview&&preview.rawSummary||{};
   const t=Date.parse(raw.start_date_local||raw.start_date||'');
@@ -2478,6 +2487,58 @@ function findStravaDuplicate(preview){
 function stravaCanImport(preview,dup){
   return !!(preview&&preview.importable&&preview.runosActivity)&&!(dup&&dup.kind==='exact');
 }
+function mergeStravaPreviews(previews,reset=false){
+  if(reset){ STRAVA_ACTIVITY_PREVIEWS=[]; STRAVA_SELECTED_IDS=new Set(); }
+  const existing=new Set(STRAVA_ACTIVITY_PREVIEWS.map(stravaPreviewKey));
+  let added=0;
+  (previews||[]).forEach(p=>{
+    const key=stravaPreviewKey(p);
+    if(existing.has(key)) return;
+    existing.add(key); STRAVA_ACTIVITY_PREVIEWS.push(p); added++;
+    const dup=findStravaDuplicate(p);
+    if(stravaCanImport(p,dup)&&!dup) STRAVA_SELECTED_IDS.add(key);
+  });
+  return added;
+}
+function stravaSelectionStats(){
+  const stats={displayed:STRAVA_ACTIVITY_PREVIEWS.length,importable:0,selected:0,exact:0,approx:0,imported:0};
+  STRAVA_ACTIVITY_PREVIEWS.forEach(p=>{
+    const dup=findStravaDuplicate(p), can=stravaCanImport(p,dup), key=stravaPreviewKey(p);
+    if(p&&p.importable) stats.importable++;
+    if(dup&&dup.kind==='exact'){ stats.exact++; stats.imported++; }
+    if(dup&&dup.kind==='approx') stats.approx++;
+    if(can&&STRAVA_SELECTED_IDS.has(key)) stats.selected++;
+  });
+  return stats;
+}
+function updateStravaSelectionSummary(){
+  const s=stravaSelectionStats();
+  const box=el('stravaSelectionSummary');
+  if(box) box.innerHTML=`表示 ${s.displayed}件 · 取込可能 ${s.importable}件 · 選択 ${s.selected}件 · 取込済み ${s.imported}件 · exact duplicate ${s.exact}件 · 近似duplicate ${s.approx}件`;
+  const importBtn=el('stravaImportSelected'); if(importBtn) importBtn.disabled=s.selected===0;
+  const more=el('stravaLoadMore'); if(more){ more.disabled=STRAVA_PAGING.loading||!STRAVA_PAGING.hasMore; more.textContent=STRAVA_PAGING.loading?'取得中…':(STRAVA_PAGING.hasMore?'さらに読み込む':'これ以上ありません'); }
+}
+function wireStravaSelectionControls(){
+  document.querySelectorAll('[data-strava-select]').forEach(cb=>cb.onchange=()=>{
+    const p=STRAVA_ACTIVITY_PREVIEWS[parseInt(cb.dataset.stravaSelect)];
+    const key=stravaPreviewKey(p);
+    if(cb.checked) STRAVA_SELECTED_IDS.add(key); else STRAVA_SELECTED_IDS.delete(key);
+    updateStravaSelectionSummary();
+  });
+  const setAll=(mode)=>{
+    STRAVA_ACTIVITY_PREVIEWS.forEach(p=>{
+      const dup=findStravaDuplicate(p), key=stravaPreviewKey(p);
+      if(!stravaCanImport(p,dup)){ STRAVA_SELECTED_IDS.delete(key); return; }
+      if(mode==='clear') STRAVA_SELECTED_IDS.delete(key);
+      else if(mode==='safe') { if(!dup) STRAVA_SELECTED_IDS.add(key); else STRAVA_SELECTED_IDS.delete(key); }
+      else if(mode==='all') STRAVA_SELECTED_IDS.add(key);
+    });
+    renderStravaActivities(null,{preserve:true});
+  };
+  const all=el('stravaSelectAll'); if(all) all.onclick=()=>setAll('all');
+  const safe=el('stravaSelectSafe'); if(safe) safe.onclick=()=>setAll('safe');
+  const clear=el('stravaClearSelection'); if(clear) clear.onclick=()=>setAll('clear');
+}
 function renderStravaAthlete(data){
   const box=el('stravaAthleteBox'); if(!box) return;
   const a=data&&data.athlete;
@@ -2488,12 +2549,26 @@ function renderStravaAthlete(data){
   </div>
   <div class="hint" style="margin-top:6px">access_token / refresh_token はWorker側KVにのみ保存され、この画面には表示しません。</div>`;
 }
-function renderStravaActivities(data){
+function renderStravaActivities(data,opts={}){
   const box=el('stravaActivitiesBox'); if(!box) return;
-  const previews=Array.isArray(data&&data.previews)?data.previews:[];
-  STRAVA_ACTIVITY_PREVIEWS=previews;
+  if(data&&Array.isArray(data.previews)){
+    mergeStravaPreviews(data.previews,!opts.append);
+    const pg=data.paging||{};
+    STRAVA_PAGING.page=Number(pg.page||data.page||STRAVA_PAGING.page||1);
+    STRAVA_PAGING.perPage=Number(pg.perPage||data.perPage||STRAVA_PER_PAGE);
+    const returned=Number(pg.returnedCount||data.returnedCount||data.previews.length||0);
+    STRAVA_PAGING.hasMore=Boolean(pg.hasMore!=null?pg.hasMore:data.hasMore!=null?data.hasMore:returned>=STRAVA_PAGING.perPage);
+    STRAVA_PAGING.reachedEnd=!STRAVA_PAGING.hasMore;
+  }
+  const previews=STRAVA_ACTIVITY_PREVIEWS;
   if(!previews.length){ box.innerHTML='<div class="empty">活動がありません</div>'; return; }
-  box.innerHTML=`<div class="tscroll"><table><thead><tr>
+  box.innerHTML=`<div class="inputs" style="margin-bottom:10px"><div class="row"><span class="l">選択状態</span><span class="r mono" id="stravaSelectionSummary"></span></div></div>
+    <div class="row-actions" style="margin-bottom:10px">
+      <button class="btn ghost" id="stravaSelectAll">表示中の取込可能をすべて選択</button>
+      <button class="btn ghost" id="stravaSelectSafe">重複候補を除いて選択</button>
+      <button class="btn ghost" id="stravaClearSelection">選択解除</button>
+    </div>
+    <div class="tscroll"><table><thead><tr>
     <th>選択</th><th>日付</th><th>名前</th><th class="n">距離</th><th class="n">時間</th><th class="n">平均ペース</th><th class="n">平均心拍</th><th>状態</th>
   </tr></thead><tbody>${previews.map((p,i)=>{
     const a=p.runosActivity||{};
@@ -2504,7 +2579,8 @@ function renderStravaActivities(data){
     const ok=!!p.importable;
     const dup=findStravaDuplicate(p);
     const can=stravaCanImport(p,dup);
-    const checked=can&&!dup?'checked':'';
+    const key=stravaPreviewKey(p);
+    const checked=can&&STRAVA_SELECTED_IDS.has(key)?'checked':'';
     const disabled=can?'':'disabled';
     const status=dup?dup.message:(ok?'選択可':'skip');
     const statusColor=dup? (dup.kind==='exact'?'var(--ink-3)':'var(--gold)') : (ok?'var(--teal)':'var(--gold)');
@@ -2519,11 +2595,14 @@ function renderStravaActivities(data){
       <td style="color:${statusColor}">${escapeHTML(status)}${!ok&&p.skipReason?`<div class="hint">${escapeHTML(p.skipReason)}</div>`:''}${dup&&dup.kind==='approx'?'<div class="hint">初期状態では未選択です</div>':''}</td>
     </tr>`; }).join('')}</tbody></table></div>
     <div class="row-actions" style="margin-top:10px">
+      <button class="btn ghost" id="stravaLoadMore">さらに読み込む</button>
       <button class="btn ghost" id="stravaExportBackup">バックアップを書き出し</button>
       <button class="btn" id="stravaImportSelected">選択した活動を取り込む</button>
     </div>
     <div class="hint" style="margin-top:8px">手動選択インポートです。選択した活動だけを既存save()経由で保存します。自動同期はしません。</div>`;
   wireStravaImportUI();
+  wireStravaSelectionControls();
+  updateStravaSelectionSummary();
 }
 function stravaPreviewToActivity(preview){
   const a=preview&&preview.runosActivity||{}, raw=preview&&preview.rawSummary||{};
@@ -2559,7 +2638,7 @@ function importSelectedStravaActivities(){
     const p=STRAVA_ACTIVITY_PREVIEWS[i];
     if(!p||!p.importable){ skipped++; return; }
     const dup=findStravaDuplicate(p);
-    if(dup){ dups++; return; }
+    if(dup&&dup.kind==='exact'){ dups++; return; }
     const ext=stravaExternalId(p);
     if(ext&&seen.has(ext)){ dups++; return; }
     const act=stravaPreviewToActivity(p);
@@ -2567,7 +2646,7 @@ function importSelectedStravaActivities(){
     if(ext) seen.add(ext);
     DB.activities.push(act); added++;
   });
-  if(!added){ DB.activities=beforeActivities; stravaStatus(`取り込み対象なし（重複 ${dups}件 / スキップ ${skipped}件 / 失敗 ${failed}件）`,'warn'); renderStravaActivities({previews:STRAVA_ACTIVITY_PREVIEWS}); return; }
+  if(!added){ DB.activities=beforeActivities; stravaStatus(`取り込み対象なし（重複 ${dups}件 / スキップ ${skipped}件 / 失敗 ${failed}件）`,'warn'); renderStravaActivities(null,{preserve:true}); return; }
   DB.activities.sort((a,b)=>a.date<b.date?-1:1);
   DB.integrations=DB.integrations||{};
   DB.integrations.stravaApi={...(DB.integrations.stravaApi||{}),lastImport:todayISO(),imported:((DB.integrations.stravaApi&&DB.integrations.stravaApi.imported)||0)+added};
@@ -2576,16 +2655,32 @@ function importSelectedStravaActivities(){
     DB.activities=beforeActivities;
     DB.integrations=beforeIntegrations;
     stravaStatus(saveFailureText(),'error');
-    renderStravaActivities({previews:STRAVA_ACTIVITY_PREVIEWS});
+    renderStravaActivities(null,{preserve:true});
     return;
   }
   stravaStatus(`取り込み完了: ${added}件 / 重複スキップ ${dups}件 / スキップ ${skipped}件 / 失敗 ${failed}件`,'ok');
   flash(`Strava: ${added}件取り込みました`);
-  renderStravaActivities({previews:STRAVA_ACTIVITY_PREVIEWS});
+  renderStravaActivities(null,{preserve:true});
 }
 function wireStravaImportUI(){
   const b=el('stravaExportBackup'); if(b) b.onclick=()=>{ try{ exportRunosBackup('runos-before-strava-import'); stravaStatus('バックアップを書き出しました','ok'); }catch(err){ stravaStatus('バックアップ書き出しに失敗しました','error'); } };
   const i=el('stravaImportSelected'); if(i) i.onclick=importSelectedStravaActivities;
+  const more=el('stravaLoadMore'); if(more) more.onclick=()=>loadStravaActivitiesPage(STRAVA_PAGING.page+1,true);
+}
+async function loadStravaActivitiesPage(page=1,append=false){
+  if(STRAVA_PAGING.loading) return;
+  STRAVA_PAGING.loading=true; updateStravaSelectionSummary();
+  stravaStatus(append?`Strava活動 ${page}ページ目を取得中…`:'Strava活動を取得中…','info');
+  try{
+    const data=await stravaFetch(`/activities?page=${page}&per_page=${STRAVA_PER_PAGE}`);
+    const before=STRAVA_ACTIVITY_PREVIEWS.length;
+    renderStravaActivities(data,{append});
+    const added=STRAVA_ACTIVITY_PREVIEWS.length-before;
+    if(!added&&append) STRAVA_PAGING.hasMore=false;
+    const s=stravaSelectionStats();
+    stravaStatus(STRAVA_PAGING.hasMore?`活動を取得しました（表示 ${s.displayed}件 / 選択 ${s.selected}件）`:`活動を取得しました（表示 ${s.displayed}件）。これ以上ありません`,'ok');
+  }catch(err){ stravaStatus(stravaErrorMessage(err),'error'); }
+  finally{ STRAVA_PAGING.loading=false; updateStravaSelectionSummary(); }
 }
 function wireStravaWorkerUI(){
   const input=el('stravaWorkerUrl'); if(input) input.value=getStravaWorkerUrl();
@@ -2615,9 +2710,8 @@ function wireStravaWorkerUI(){
   };
   const actsBtn=el('stravaFetchActivities');
   if(actsBtn) actsBtn.onclick=async()=>{
-    stravaStatus('活動を取得中…','info');
-    try{ const data=await stravaFetch('/activities?page=1&per_page=30'); renderStravaActivities(data); stravaStatus(`活動プレビューを取得しました（${data.importableCount||0}件候補）`,'ok'); }
-    catch(err){ stravaStatus(stravaErrorMessage(err),'error'); }
+    STRAVA_ACTIVITY_PREVIEWS=[]; STRAVA_SELECTED_IDS=new Set(); STRAVA_PAGING={page:0,perPage:STRAVA_PER_PAGE,hasMore:false,loading:false,reachedEnd:false};
+    await loadStravaActivitiesPage(1,false);
   };
 }
 

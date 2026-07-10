@@ -365,8 +365,10 @@ function buildActivitiesQuery(url) {
   const query = new URLSearchParams();
   const before = Number(url.searchParams.get("before") || 0);
   const after = Number(url.searchParams.get("after") || 0);
-  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
-  const perPage = Math.max(1, Math.min(100, Number(url.searchParams.get("per_page") || 30)));
+  const requestedPage = Number(url.searchParams.get("page") || 1);
+  const page = Math.max(1, Math.floor(Number.isFinite(requestedPage) ? requestedPage : 1));
+  const requestedPerPage = url.searchParams.get("per_page") || url.searchParams.get("perPage") || 30;
+  const perPage = Math.max(1, Math.min(100, Math.floor(Number(requestedPerPage) || 30)));
 
   if (before > 0) query.set("before", String(Math.floor(before)));
   if (after > 0) query.set("after", String(Math.floor(after)));
@@ -524,9 +526,13 @@ async function handleActivities(request, env) {
       paging: {
         page: params.page,
         perPage: params.perPage,
+        returnedCount: activities.length,
+        hasMore: activities.length >= params.perPage,
         before: params.before,
         after: params.after
       },
+      returnedCount: activities.length,
+      hasMore: activities.length >= params.perPage,
       rateLimit: result.rateLimit,
       rawActivities: activities,
       previews,
