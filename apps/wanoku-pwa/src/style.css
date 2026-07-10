@@ -157,6 +157,34 @@ button {
   pointer-events: none;
 }
 
+.log-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.log-item {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid rgba(153, 246, 228, 0.22);
+  border-radius: 16px;
+  background: rgba(4, 47, 46, 0.42);
+}
+
+.log-item h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.log-item p {
+  margin: 0;
+}
+
+.log-item button {
+  justify-self: start;
+}
+
 pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

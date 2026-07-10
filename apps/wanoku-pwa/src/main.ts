@@ -1,15 +1,20 @@
 import { angleDiff } from "@personal/wanoku-core";
 import { registerServiceWorker } from "./registerServiceWorker";
 import {
+  WANOKU_DEMO_CATCH_LOGS_KEY,
   WANOKU_DEMO_SETTINGS_KEY,
+  addWanokuCatchLog,
   createWanokuDemoBackupFileName,
   createWanokuDemoBackupText,
   createWanokuDemoSettings,
   createWanokuStorageAdapter,
+  deleteWanokuCatchLog,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
+  getWanokuCatchLogsOrEmpty,
   isWanokuDemoSettings,
+  loadWanokuDemoBackupData,
   restoreWanokuDemoBackupText,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
@@ -25,6 +30,7 @@ if (!app) {
 
 const browserStorage = getBrowserLocalStorage();
 const storageAdapter = createWanokuStorageAdapter(browserStorage);
+const todayIso = new Date().toISOString().slice(0, 10);
 
 app.innerHTML = `
   <section class="shell">
@@ -40,7 +46,7 @@ app.innerHTML = `
       </div>
       <div>
         <dt>Storage</dt>
-        <dd>demo key: ${WANOKU_DEMO_SETTINGS_KEY}</dd>
+        <dd>demo keys: ${WANOKU_DEMO_SETTINGS_KEY}, ${WANOKU_DEMO_CATCH_LOGS_KEY}</dd>
       </div>
       <div>
         <dt>Service Worker</dt>
@@ -63,6 +69,44 @@ app.innerHTML = `
         <button type="button" data-action="corrupt">破損JSONを注入して検知</button>
       </div>
       <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
+    </section>
+    <section class="demo-card" aria-labelledby="catch-log-heading">
+      <h2 id="catch-log-heading">軽量釣果ログ</h2>
+      <p>
+        PWA demo keyだけに保存する軽量ログです。潮汐・スコアリング・外部API・legacy Storeキー群には接続していません。
+      </p>
+      <form id="catch-log-form" class="log-form">
+        <div class="field-grid">
+          <label>
+            日付
+            <input id="catch-date" type="date" value="${todayIso}" required />
+          </label>
+          <label>
+            スポット名
+            <input id="catch-spot" type="text" value="湾奥" maxlength="80" required />
+          </label>
+          <label>
+            対象魚
+            <input id="catch-target" type="text" value="シーバス" maxlength="40" required />
+          </label>
+          <label>
+            結果
+            <input id="catch-result" type="text" value="ノーフィッシュ" maxlength="80" required />
+          </label>
+          <label>
+            ルアー
+            <input id="catch-lure" type="text" maxlength="80" placeholder="例: ミノー" />
+          </label>
+        </div>
+        <label>
+          メモ
+          <input id="catch-note" type="text" maxlength="160" placeholder="例: 下げ始めに反応" />
+        </label>
+        <div class="actions">
+          <button type="submit">釣果ログを追加</button>
+        </div>
+      </form>
+      <div id="catch-log-list" class="log-list" aria-live="polite"></div>
     </section>
     <section class="demo-card" aria-labelledby="wind-demo-heading">
       <h2 id="wind-demo-heading">風向差デモ</h2>
@@ -90,6 +134,14 @@ const windAngleAInput = document.querySelector<HTMLInputElement>("#wind-angle-a"
 const windAngleBInput = document.querySelector<HTMLInputElement>("#wind-angle-b");
 const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
 const backupImportInput = document.querySelector<HTMLInputElement>("#backup-import");
+const catchLogForm = document.querySelector<HTMLFormElement>("#catch-log-form");
+const catchLogList = document.querySelector<HTMLDivElement>("#catch-log-list");
+const catchDateInput = document.querySelector<HTMLInputElement>("#catch-date");
+const catchSpotInput = document.querySelector<HTMLInputElement>("#catch-spot");
+const catchTargetInput = document.querySelector<HTMLInputElement>("#catch-target");
+const catchResultInput = document.querySelector<HTMLInputElement>("#catch-result");
+const catchLureInput = document.querySelector<HTMLInputElement>("#catch-lure");
+const catchNoteInput = document.querySelector<HTMLInputElement>("#catch-note");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -117,7 +169,7 @@ document.querySelector<HTMLButtonElement>("[data-action='export-backup']")?.addE
     return;
   }
 
-  const backupText = createWanokuDemoBackupText(result.value);
+  const backupText = createWanokuDemoBackupText(loadWanokuDemoBackupData(storageAdapter));
   const fileName = createWanokuDemoBackupFileName();
   downloadTextFile(fileName, backupText);
   updateOutput(`バックアップを書き出しました: ${fileName}`);
@@ -132,6 +184,9 @@ backupImportInput?.addEventListener("change", () => {
     .then((text) => {
       const result = restoreWanokuDemoBackupText(storageAdapter, text);
       updateOutput(describeWanokuRestoreResult(result));
+      if (result.status === "restored") {
+        renderCatchLogs();
+      }
     })
     .catch((error: unknown) => {
       console.warn("[wanoku-pwa] backup import failed", error);
@@ -153,6 +208,28 @@ document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventLi
   updateOutput(describeWanokuLoadResult(result, storageAdapter.mode));
 });
 
+catchLogForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const result = addWanokuCatchLog(storageAdapter, {
+    date: catchDateInput?.value ?? "",
+    spotName: catchSpotInput?.value ?? "",
+    targetFish: catchTargetInput?.value ?? "",
+    result: catchResultInput?.value ?? "",
+    lure: catchLureInput?.value ?? "",
+    note: catchNoteInput?.value ?? ""
+  });
+
+  if (!result.ok) {
+    updateOutput(`釣果ログを保存できませんでした: ${result.message}`);
+    return;
+  }
+
+  updateOutput(`釣果ログを保存しました: ${describeWanokuSaveResult(result.saveResult)}`);
+  if (catchNoteInput) catchNoteInput.value = "";
+  if (catchLureInput) catchLureInput.value = "";
+  renderCatchLogs();
+});
+
 function updateWindDemo(): void {
   const result = calculateWindDemo(Number(windAngleAInput?.value), Number(windAngleBInput?.value));
 
@@ -164,6 +241,7 @@ function updateWindDemo(): void {
 windAngleAInput?.addEventListener("input", updateWindDemo);
 windAngleBInput?.addEventListener("input", updateWindDemo);
 updateWindDemo();
+renderCatchLogs();
 
 registerServiceWorker((status) => {
   if (serviceWorkerStatus) {
@@ -191,4 +269,44 @@ function downloadTextFile(fileName: string, text: string): void {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+function renderCatchLogs(): void {
+  if (!catchLogList) return;
+
+  const logs = getWanokuCatchLogsOrEmpty(storageAdapter);
+  catchLogList.replaceChildren();
+
+  if (logs.length === 0) {
+    const empty = document.createElement("p");
+    empty.textContent = "釣果ログはまだありません。";
+    catchLogList.append(empty);
+    return;
+  }
+
+  for (const log of logs) {
+    const item = document.createElement("article");
+    item.className = "log-item";
+
+    const title = document.createElement("h3");
+    title.textContent = `${log.date} / ${log.spotName} / ${log.targetFish}`;
+
+    const meta = document.createElement("p");
+    meta.textContent = `結果: ${log.result}${log.lure ? ` / ルアー: ${log.lure}` : ""}`;
+
+    const note = document.createElement("p");
+    note.textContent = log.note || "メモなし";
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "削除";
+    deleteButton.addEventListener("click", () => {
+      const result = deleteWanokuCatchLog(storageAdapter, log.id);
+      updateOutput(`釣果ログを削除しました: ${describeWanokuSaveResult(result)}`);
+      renderCatchLogs();
+    });
+
+    item.append(title, meta, note, deleteButton);
+    catchLogList.append(item);
+  }
 }

@@ -3,14 +3,19 @@ import { calculatePaceDemo, describePaceDemoResult } from "./paceDemo";
 import { registerServiceWorker } from "./registerServiceWorker";
 import {
   RUNOS_DEMO_SETTINGS_KEY,
+  RUNOS_DEMO_RUN_LOGS_KEY,
+  addRunosRunLog,
   createRunosDemoBackupFileName,
   createRunosDemoBackupText,
   createRunosDemoSettings,
   createRunosStorageAdapter,
+  deleteRunosRunLog,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
+  getRunosRunLogsOrEmpty,
   isRunosDemoSettings,
+  loadRunosDemoBackupData,
   restoreRunosDemoBackupText,
   writeRunosDemoCorruptJson
 } from "./storageDemo";
@@ -26,6 +31,7 @@ if (!app) {
 const samplePace = averagePaceSecondsPerKilometer(10, 45 * 60);
 const browserStorage = getBrowserLocalStorage();
 const storageAdapter = createRunosStorageAdapter(browserStorage);
+const todayIso = new Date().toISOString().slice(0, 10);
 
 app.innerHTML = `
   <section class="shell">
@@ -41,7 +47,7 @@ app.innerHTML = `
       </div>
       <div>
         <dt>Storage</dt>
-        <dd>demo key: ${RUNOS_DEMO_SETTINGS_KEY}</dd>
+        <dd>demo keys: ${RUNOS_DEMO_SETTINGS_KEY}, ${RUNOS_DEMO_RUN_LOGS_KEY}</dd>
       </div>
       <div>
         <dt>Service Worker</dt>
@@ -64,6 +70,44 @@ app.innerHTML = `
         <button type="button" data-action="corrupt">破損JSONを注入して検知</button>
       </div>
       <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
+    </section>
+    <section class="demo-card" aria-labelledby="run-log-heading">
+      <h2 id="run-log-heading">軽量ラン記録</h2>
+      <p>
+        PWA demo keyだけに保存する軽量ログです。FIT解析やlegacyの <code>meridian.v1</code> には接続していません。
+      </p>
+      <form id="run-log-form" class="log-form">
+        <div class="field-grid">
+          <label>
+            日付
+            <input id="run-date" type="date" value="${todayIso}" required />
+          </label>
+          <label>
+            距離 km
+            <input id="run-distance" type="number" min="0.01" step="0.01" value="5" inputmode="decimal" required />
+          </label>
+          <label>
+            時間 分
+            <input id="run-minutes" type="number" min="0" step="1" value="30" inputmode="numeric" required />
+          </label>
+          <label>
+            時間 秒
+            <input id="run-seconds" type="number" min="0" step="1" value="0" inputmode="numeric" required />
+          </label>
+          <label>
+            痛み 0-10 任意
+            <input id="run-pain" type="number" min="0" max="10" step="1" inputmode="numeric" />
+          </label>
+        </div>
+        <label>
+          メモ
+          <input id="run-note" type="text" maxlength="120" placeholder="例: easy jog" />
+        </label>
+        <div class="actions">
+          <button type="submit">ラン記録を追加</button>
+        </div>
+      </form>
+      <div id="run-log-list" class="log-list" aria-live="polite"></div>
     </section>
     <section class="demo-card" aria-labelledby="pace-demo-heading">
       <h2 id="pace-demo-heading">ペース計算デモ</h2>
@@ -96,6 +140,14 @@ const paceMinutesInput = document.querySelector<HTMLInputElement>("#pace-minutes
 const paceSecondsInput = document.querySelector<HTMLInputElement>("#pace-seconds");
 const serviceWorkerStatus = document.querySelector<HTMLElement>("#sw-status");
 const backupImportInput = document.querySelector<HTMLInputElement>("#backup-import");
+const runLogForm = document.querySelector<HTMLFormElement>("#run-log-form");
+const runLogList = document.querySelector<HTMLDivElement>("#run-log-list");
+const runDateInput = document.querySelector<HTMLInputElement>("#run-date");
+const runDistanceInput = document.querySelector<HTMLInputElement>("#run-distance");
+const runMinutesInput = document.querySelector<HTMLInputElement>("#run-minutes");
+const runSecondsInput = document.querySelector<HTMLInputElement>("#run-seconds");
+const runPainInput = document.querySelector<HTMLInputElement>("#run-pain");
+const runNoteInput = document.querySelector<HTMLInputElement>("#run-note");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -123,7 +175,7 @@ document.querySelector<HTMLButtonElement>("[data-action='export-backup']")?.addE
     return;
   }
 
-  const backupText = createRunosDemoBackupText(result.value);
+  const backupText = createRunosDemoBackupText(loadRunosDemoBackupData(storageAdapter));
   const fileName = createRunosDemoBackupFileName();
   downloadTextFile(fileName, backupText);
   updateOutput(`バックアップを書き出しました: ${fileName}`);
@@ -138,6 +190,9 @@ backupImportInput?.addEventListener("change", () => {
     .then((text) => {
       const result = restoreRunosDemoBackupText(storageAdapter, text);
       updateOutput(describeRunosRestoreResult(result));
+      if (result.status === "restored") {
+        renderRunLogs();
+      }
     })
     .catch((error: unknown) => {
       console.warn("[runos-pwa] backup import failed", error);
@@ -159,6 +214,29 @@ document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventLi
   updateOutput(describeRunosLoadResult(result, storageAdapter.mode));
 });
 
+runLogForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const durationSec = Number(runMinutesInput?.value) * 60 + Number(runSecondsInput?.value);
+  const painValue = runPainInput?.value.trim();
+  const result = addRunosRunLog(storageAdapter, {
+    date: runDateInput?.value ?? "",
+    distanceKm: Number(runDistanceInput?.value),
+    durationSec,
+    note: runNoteInput?.value ?? "",
+    painLevel: painValue ? Number(painValue) : undefined
+  });
+
+  if (!result.ok) {
+    updateOutput(`ラン記録を保存できませんでした: ${result.message}`);
+    return;
+  }
+
+  updateOutput(`ラン記録を保存しました: ${describeRunosSaveResult(result.saveResult)}`);
+  if (runNoteInput) runNoteInput.value = "";
+  if (runPainInput) runPainInput.value = "";
+  renderRunLogs();
+});
+
 function updatePaceDemo(): void {
   const result = calculatePaceDemo({
     distanceKilometers: Number(paceDistanceInput?.value),
@@ -175,6 +253,7 @@ paceDistanceInput?.addEventListener("input", updatePaceDemo);
 paceMinutesInput?.addEventListener("input", updatePaceDemo);
 paceSecondsInput?.addEventListener("input", updatePaceDemo);
 updatePaceDemo();
+renderRunLogs();
 
 registerServiceWorker((status) => {
   if (serviceWorkerStatus) {
@@ -202,4 +281,44 @@ function downloadTextFile(fileName: string, text: string): void {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+function renderRunLogs(): void {
+  if (!runLogList) return;
+
+  const logs = getRunosRunLogsOrEmpty(storageAdapter);
+  runLogList.replaceChildren();
+
+  if (logs.length === 0) {
+    const empty = document.createElement("p");
+    empty.textContent = "ラン記録はまだありません。";
+    runLogList.append(empty);
+    return;
+  }
+
+  for (const log of logs) {
+    const item = document.createElement("article");
+    item.className = "log-item";
+
+    const title = document.createElement("h3");
+    title.textContent = `${log.date} / ${log.distanceKm}km / ${formatPace(log.avgPace)}`;
+
+    const meta = document.createElement("p");
+    meta.textContent = `時間: ${log.durationSec}秒${log.painLevel === undefined ? "" : ` / 痛み: ${log.painLevel}`}`;
+
+    const note = document.createElement("p");
+    note.textContent = log.note || "メモなし";
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "削除";
+    deleteButton.addEventListener("click", () => {
+      const result = deleteRunosRunLog(storageAdapter, log.id);
+      updateOutput(`ラン記録を削除しました: ${describeRunosSaveResult(result)}`);
+      renderRunLogs();
+    });
+
+    item.append(title, meta, note, deleteButton);
+    runLogList.append(item);
+  }
 }

@@ -4,4 +4,11 @@ export {
   paceToSecondsPerKilometer,
   secondsPerKilometerToPaceParts
 } from "./pace";
+export {
+  createLightweightRunLog,
+  isLightweightRunLog,
+  isLightweightRunLogArray,
+  type CreateLightweightRunLogInput,
+  type LightweightRunLog
+} from "./runLog";
 
