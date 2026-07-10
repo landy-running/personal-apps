@@ -1,0 +1,19 @@
+{
+  "name": "RunOS PWA",
+  "short_name": "RunOS",
+  "description": "RunOSの段階移行用PWAシェルです。legacy HTMLは別途維持します。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#101827",
+  "theme_color": "#101827",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

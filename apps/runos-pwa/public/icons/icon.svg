@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="RunOS placeholder icon">
+  <rect width="512" height="512" rx="112" fill="#101827"/>
+  <path d="M128 316c46-75 90-120 132-136 43-16 85-2 124 42" fill="none" stroke="#38bdf8" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="184" cy="332" r="34" fill="#e0f2fe"/>
+  <circle cx="346" cy="198" r="34" fill="#e0f2fe"/>
+  <text x="256" y="420" text-anchor="middle" font-family="system-ui, sans-serif" font-size="70" font-weight="800" fill="#f8fafc">R</text>
+</svg>
+

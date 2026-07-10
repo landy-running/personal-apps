@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="wanoku-navi placeholder icon">
+  <rect width="512" height="512" rx="112" fill="#082f2a"/>
+  <path d="M96 310c52-44 102-61 151-51 37 8 72 32 105 73 26-42 48-66 64-72" fill="none" stroke="#5eead4" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="188" cy="225" r="34" fill="#ccfbf1"/>
+  <path d="M338 184l78 39-78 39z" fill="#ccfbf1"/>
+  <text x="256" y="420" text-anchor="middle" font-family="system-ui, sans-serif" font-size="62" font-weight="800" fill="#f0fdfa">湾</text>
+</svg>
+

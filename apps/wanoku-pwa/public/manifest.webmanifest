@@ -1,0 +1,19 @@
+{
+  "name": "wanoku-navi PWA",
+  "short_name": "湾奥ナビ",
+  "description": "wanoku-naviの段階移行用PWAシェルです。legacy HTMLは別途維持します。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#082f2a",
+  "theme_color": "#082f2a",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
