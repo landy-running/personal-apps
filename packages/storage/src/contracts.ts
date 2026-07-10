@@ -154,9 +154,13 @@ export const WANOKU_STORAGE_CONTRACT: WanokuStorageContract = {
   multiKeyWritesAreTransactional: false
 };
 
-export function createRunosCorruptBackupKey(timestamp: number): RunosCorruptStorageKey {
+export function createCorruptBackupKey<Key extends string>(sourceKey: Key, timestamp: number): `${Key}.corrupt.${number}` {
   assertSafeTimestamp(timestamp);
-  return `${RUNOS_PRIMARY_STORAGE_KEY}.corrupt.${timestamp}`;
+  return `${sourceKey}.corrupt.${timestamp}` as `${Key}.corrupt.${number}`;
+}
+
+export function createRunosCorruptBackupKey(timestamp: number): RunosCorruptStorageKey {
+  return createCorruptBackupKey(RUNOS_PRIMARY_STORAGE_KEY, timestamp);
 }
 
 export function createWanokuCorruptBackupKey<Key extends WanokuStorageKey>(
@@ -164,8 +168,7 @@ export function createWanokuCorruptBackupKey<Key extends WanokuStorageKey>(
   timestamp: number
 ): `${Key}.corrupt.${number}` {
   assertWanokuStorageKey(sourceKey);
-  assertSafeTimestamp(timestamp);
-  return `${sourceKey}.corrupt.${timestamp}`;
+  return createCorruptBackupKey(sourceKey, timestamp);
 }
 
 export function isRunosCorruptBackupKey(key: string): key is RunosCorruptStorageKey {
@@ -193,4 +196,3 @@ function assertSafeTimestamp(timestamp: number): void {
     throw new RangeError("timestamp must be a non-negative safe integer.");
   }
 }
-
