@@ -68,3 +68,46 @@ dd {
   font-weight: 700;
 }
 
+.demo-card {
+  max-width: 760px;
+  padding: 18px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 22px;
+  background: rgba(15, 23, 42, 0.82);
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+code {
+  color: #bae6fd;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 16px;
+  background: #38bdf8;
+  color: #082f49;
+  font-weight: 800;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.72);
+  color: #e0f2fe;
+}

@@ -68,3 +68,42 @@ dd {
   font-weight: 700;
 }
 
+.demo-card {
+  max-width: 760px;
+  padding: 18px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  border-radius: 22px;
+  background: rgba(6, 78, 59, 0.72);
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 16px;
+  background: #5eead4;
+  color: #042f2e;
+  font-weight: 800;
+}
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(4, 47, 46, 0.72);
+  color: #ccfbf1;
+}
