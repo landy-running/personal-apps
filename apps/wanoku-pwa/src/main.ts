@@ -9,6 +9,7 @@ import {
   isWanokuDemoSettings,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
+import { calculateWindDemo, describeWindDemoResult } from "./windDemo";
 
 import "./style.css";
 
@@ -50,10 +51,30 @@ app.innerHTML = `
       </div>
       <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
     </section>
+    <section class="demo-card" aria-labelledby="wind-demo-heading">
+      <h2 id="wind-demo-heading">風向差デモ</h2>
+      <p>
+        <code>wanoku-core</code> の <code>angleDiff</code> だけを使った確認デモです。潮汐・スコアリングには接続していません。
+      </p>
+      <div class="field-grid">
+        <label>
+          角度A / スポット向き
+          <input id="wind-angle-a" type="number" step="1" value="350" inputmode="numeric" />
+        </label>
+        <label>
+          角度B / 風向
+          <input id="wind-angle-b" type="number" step="1" value="10" inputmode="numeric" />
+        </label>
+      </div>
+      <pre id="wind-result" aria-live="polite">風向差: ${angleDiff(350, 10)}°</pre>
+    </section>
   </section>
 `;
 
 const output = document.querySelector<HTMLPreElement>("#storage-result");
+const windOutput = document.querySelector<HTMLPreElement>("#wind-result");
+const windAngleAInput = document.querySelector<HTMLInputElement>("#wind-angle-a");
+const windAngleBInput = document.querySelector<HTMLInputElement>("#wind-angle-b");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -84,6 +105,18 @@ document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventLi
   const result = storageAdapter.loadJson(WANOKU_DEMO_SETTINGS_KEY, isWanokuDemoSettings);
   updateOutput(describeWanokuLoadResult(result, storageAdapter.mode));
 });
+
+function updateWindDemo(): void {
+  const result = calculateWindDemo(Number(windAngleAInput?.value), Number(windAngleBInput?.value));
+
+  if (windOutput) {
+    windOutput.textContent = describeWindDemoResult(result);
+  }
+}
+
+windAngleAInput?.addEventListener("input", updateWindDemo);
+windAngleBInput?.addEventListener("input", updateWindDemo);
+updateWindDemo();
 
 registerServiceWorker();
 

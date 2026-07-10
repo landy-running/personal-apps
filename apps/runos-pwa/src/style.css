@@ -92,6 +92,32 @@ code {
   margin: 16px 0;
 }
 
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+label {
+  display: grid;
+  gap: 8px;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: rgba(15, 23, 42, 0.8);
+  color: #f8fafc;
+  font: inherit;
+}
+
 button {
   min-height: 44px;
   border: 0;

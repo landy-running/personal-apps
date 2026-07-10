@@ -1,4 +1,5 @@
 import { averagePaceSecondsPerKilometer, formatPace } from "@personal/runos-core";
+import { calculatePaceDemo, describePaceDemoResult } from "./paceDemo";
 import { registerServiceWorker } from "./registerServiceWorker";
 import {
   RUNOS_DEMO_SETTINGS_KEY,
@@ -51,10 +52,35 @@ app.innerHTML = `
       </div>
       <pre id="storage-result" aria-live="polite">未実行。IndexedDBは未実装です。</pre>
     </section>
+    <section class="demo-card" aria-labelledby="pace-demo-heading">
+      <h2 id="pace-demo-heading">ペース計算デモ</h2>
+      <p>
+        <code>runos-core</code> のpace utilityだけを使った確認デモです。RunOS実データには接続していません。
+      </p>
+      <div class="field-grid">
+        <label>
+          距離 km
+          <input id="pace-distance" type="number" min="0.01" step="0.01" value="10" inputmode="decimal" />
+        </label>
+        <label>
+          時間 分
+          <input id="pace-minutes" type="number" min="0" step="1" value="45" inputmode="numeric" />
+        </label>
+        <label>
+          時間 秒
+          <input id="pace-seconds" type="number" min="0" step="1" value="0" inputmode="numeric" />
+        </label>
+      </div>
+      <pre id="pace-result" aria-live="polite">平均ペース: ${formatPace(samplePace)}</pre>
+    </section>
   </section>
 `;
 
 const output = document.querySelector<HTMLPreElement>("#storage-result");
+const paceOutput = document.querySelector<HTMLPreElement>("#pace-result");
+const paceDistanceInput = document.querySelector<HTMLInputElement>("#pace-distance");
+const paceMinutesInput = document.querySelector<HTMLInputElement>("#pace-minutes");
+const paceSecondsInput = document.querySelector<HTMLInputElement>("#pace-seconds");
 
 function updateOutput(message: string): void {
   if (output) output.textContent = message;
@@ -85,6 +111,23 @@ document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventLi
   const result = storageAdapter.loadJson(RUNOS_DEMO_SETTINGS_KEY, isRunosDemoSettings);
   updateOutput(describeRunosLoadResult(result, storageAdapter.mode));
 });
+
+function updatePaceDemo(): void {
+  const result = calculatePaceDemo({
+    distanceKilometers: Number(paceDistanceInput?.value),
+    elapsedMinutes: Number(paceMinutesInput?.value),
+    elapsedSeconds: Number(paceSecondsInput?.value)
+  });
+
+  if (paceOutput) {
+    paceOutput.textContent = describePaceDemoResult(result);
+  }
+}
+
+paceDistanceInput?.addEventListener("input", updatePaceDemo);
+paceMinutesInput?.addEventListener("input", updatePaceDemo);
+paceSecondsInput?.addEventListener("input", updatePaceDemo);
+updatePaceDemo();
 
 registerServiceWorker();
 

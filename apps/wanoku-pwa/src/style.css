@@ -88,6 +88,32 @@ h2 {
   margin: 16px 0;
 }
 
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+label {
+  display: grid;
+  gap: 8px;
+  color: #ccfbf1;
+  font-size: 0.9rem;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(153, 246, 228, 0.36);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: rgba(4, 47, 46, 0.72);
+  color: #f0fdfa;
+  font: inherit;
+}
+
 button {
   min-height: 44px;
   border: 0;
