@@ -6,6 +6,7 @@ import {
   WANOKU_INDEXEDDB_BACKUP_SCHEMA_VERSION,
   WANOKU_INDEXEDDB_BACKUP_TYPE,
   addWanokuCatchLog,
+  addWanokuCatchLogForMode,
   createWanokuDemoBackupText,
   createWanokuDemoSettings,
   createWanokuIndexedDbDemoBackupText,
@@ -15,6 +16,7 @@ import {
   describeWanokuIndexedDbLoadResult,
   describeWanokuIndexedDbRestoreResult,
   describeWanokuIndexedDbSaveResult,
+  describeWanokuLogStorageModeSaveResult,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
@@ -26,6 +28,7 @@ import {
   parseWanokuIndexedDbDemoBackupText,
   restoreWanokuIndexedDbDemoBackupText,
   restoreWanokuDemoBackupText,
+  saveWanokuCatchLogsForMode,
   saveWanokuDemoToIndexedDb,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
@@ -86,6 +89,20 @@ class MemoryAsyncJsonAdapter<Key extends string> {
       key,
       value: value as Value,
       bytes: new TextEncoder().encode(rawValue).byteLength
+    };
+  }
+}
+
+class FailingAsyncJsonAdapter<Key extends string> extends MemoryAsyncJsonAdapter<Key> {
+  async saveJson(key: Key, value: unknown): Promise<SaveResult<Key>> {
+    const json = JSON.stringify(value);
+    return {
+      status: "failed",
+      mode: "local",
+      key,
+      reason: "write-failed",
+      bytes: new TextEncoder().encode(json).byteLength,
+      error: new Error("indexedDB write failed")
     };
   }
 }
@@ -298,5 +315,90 @@ describe("wanoku-navi PWA storage demo", () => {
     const badChecksum = JSON.stringify(badChecksumJson);
     const checksumResult = await restoreWanokuIndexedDbDemoBackupText(indexedDbAdapter, badChecksum);
     expect(checksumResult).toMatchObject({ status: "rejected", reason: "checksum-mismatch" });
+  });
+
+  it("keeps lightweight catch log storage mode on localStorage by default", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createWanokuStorageAdapter(storage);
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+
+    const result = await addWanokuCatchLogForMode(
+      "localStorage",
+      localAdapter,
+      indexedDbAdapter,
+      {
+        id: "catch-mode-local",
+        date: "2026-07-10",
+        spotName: "豊洲",
+        targetFish: "シーバス",
+        result: "1匹"
+      },
+      new Date("2026-07-10T00:03:00.000Z")
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("catch log mode save failed in test.");
+    expect(result.saveResult.status).toBe("success");
+    expect(result.saveResult.canonicalSource).toBe("localStorage");
+    expect(storage.getItem(WANOKU_DEMO_CATCH_LOGS_KEY)).toContain("catch-mode-local");
+    expect(indexedDbAdapter.values.size).toBe(0);
+    expect(describeWanokuLogStorageModeSaveResult(result.saveResult)).toContain("正本: localStorage");
+  });
+
+  it("can save lightweight catch logs to indexedDB mode without writing localStorage", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createWanokuStorageAdapter(storage);
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+
+    const result = await addWanokuCatchLogForMode(
+      "indexedDB",
+      localAdapter,
+      indexedDbAdapter,
+      {
+        id: "catch-mode-idb",
+        date: "2026-07-10",
+        spotName: "豊洲",
+        targetFish: "シーバス",
+        result: "1匹"
+      },
+      new Date("2026-07-10T00:04:00.000Z")
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("catch log idb mode save failed in test.");
+    expect(result.saveResult.status).toBe("success");
+    expect(result.saveResult.canonicalSource).toBe("indexedDB");
+    expect(storage.getItem(WANOKU_DEMO_CATCH_LOGS_KEY)).toBeNull();
+    expect(indexedDbAdapter.values.get(WANOKU_DEMO_CATCH_LOGS_KEY)).toContain("catch-mode-idb");
+  });
+
+  it("does not treat dual-write as success when indexedDB fails", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createWanokuStorageAdapter(storage);
+    const failingIndexedDb = new FailingAsyncJsonAdapter<typeof WANOKU_DEMO_SETTINGS_KEY | typeof WANOKU_DEMO_CATCH_LOGS_KEY>();
+
+    const result = await saveWanokuCatchLogsForMode(
+      "dual-write",
+      localAdapter,
+      failingIndexedDb,
+      [
+        {
+          id: "catch-mode-dual",
+          date: "2026-07-10",
+          spotName: "豊洲",
+          targetFish: "シーバス",
+          result: "1匹",
+          lure: "",
+          note: ""
+        }
+      ],
+      new Date("2026-07-10T00:05:00.000Z")
+    );
+
+    expect(result.status).toBe("partial");
+    expect(result.canonicalSource).toBe("localStorage");
+    expect(result.failedTargets).toEqual(["indexedDB"]);
+    expect(storage.getItem(WANOKU_DEMO_CATCH_LOGS_KEY)).toContain("catch-mode-dual");
+    expect(describeWanokuLogStorageModeSaveResult(result)).toContain("失敗先: indexedDB");
   });
 });

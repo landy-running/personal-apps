@@ -44,6 +44,19 @@ export type WanokuDemoBackupData = {
   catchLogs: LightweightCatchLog[];
 };
 
+export type WanokuLogStorageMode = "localStorage" | "indexedDB" | "dual-write";
+export type WanokuLogStorageTarget = "localStorage" | "indexedDB";
+export type WanokuLogStorageModeSaveResult = {
+  status: "success" | "partial" | "failed";
+  mode: WanokuLogStorageMode;
+  canonicalSource: WanokuLogStorageTarget;
+  savedAtIso: string;
+  catchLogCount: number;
+  localStorageResult?: SaveResult<WanokuDemoStorageKey>;
+  indexedDbResult?: SaveResult<WanokuDemoStorageKey>;
+  failedTargets: readonly WanokuLogStorageTarget[];
+};
+
 export type WanokuIndexedDbDemoSaveResult = {
   dbName: typeof WANOKU_INDEXEDDB_DB_NAME;
   storeName: typeof WANOKU_INDEXEDDB_STORE_NAME;
@@ -168,6 +181,60 @@ export function saveWanokuCatchLogs(
   return adapter.saveJson(WANOKU_DEMO_CATCH_LOGS_KEY, logs);
 }
 
+export async function loadWanokuCatchLogsFromIndexedDb(
+  adapter: WanokuIndexedDbAdapterLike
+): Promise<LoadJsonResult<WanokuDemoStorageKey, LightweightCatchLog[]>> {
+  return adapter.loadJson(WANOKU_DEMO_CATCH_LOGS_KEY, isLightweightCatchLogArray);
+}
+
+export async function getWanokuCatchLogsForMode(
+  mode: WanokuLogStorageMode,
+  localAdapter: LocalStorageAdapter<WanokuDemoStorageKey>,
+  indexedDbAdapter: WanokuIndexedDbAdapterLike
+): Promise<LightweightCatchLog[]> {
+  if (getWanokuCanonicalSource(mode) === "localStorage") {
+    return getWanokuCatchLogsOrEmpty(localAdapter);
+  }
+
+  const result = await loadWanokuCatchLogsFromIndexedDb(indexedDbAdapter);
+  return result.status === "success" ? result.value : [];
+}
+
+export async function saveWanokuCatchLogsForMode(
+  mode: WanokuLogStorageMode,
+  localAdapter: LocalStorageAdapter<WanokuDemoStorageKey>,
+  indexedDbAdapter: WanokuIndexedDbAdapterLike,
+  logs: LightweightCatchLog[],
+  now = new Date()
+): Promise<WanokuLogStorageModeSaveResult> {
+  const canonicalSource = getWanokuCanonicalSource(mode);
+  const localStorageResult =
+    mode === "localStorage" || mode === "dual-write" ? saveWanokuCatchLogs(localAdapter, logs) : undefined;
+  const indexedDbResult =
+    mode === "indexedDB" || mode === "dual-write"
+      ? await indexedDbAdapter.saveJson(WANOKU_DEMO_CATCH_LOGS_KEY, logs)
+      : undefined;
+  const failedTargets: WanokuLogStorageTarget[] = [];
+
+  if (localStorageResult && !isDurableSaveSuccess(localStorageResult)) {
+    failedTargets.push("localStorage");
+  }
+  if (indexedDbResult && !isDurableSaveSuccess(indexedDbResult)) {
+    failedTargets.push("indexedDB");
+  }
+
+  return {
+    status: failedTargets.length === 0 ? "success" : failedTargets.length === getWanokuTargetCount(mode) ? "failed" : "partial",
+    mode,
+    canonicalSource,
+    savedAtIso: now.toISOString(),
+    catchLogCount: logs.length,
+    localStorageResult,
+    indexedDbResult,
+    failedTargets
+  };
+}
+
 export function addWanokuCatchLog(
   adapter: LocalStorageAdapter<WanokuDemoStorageKey>,
   input: Omit<CreateLightweightCatchLogInput, "id"> & { id?: string }
@@ -202,6 +269,44 @@ export function addWanokuCatchLog(
   }
 }
 
+export async function addWanokuCatchLogForMode(
+  mode: WanokuLogStorageMode,
+  localAdapter: LocalStorageAdapter<WanokuDemoStorageKey>,
+  indexedDbAdapter: WanokuIndexedDbAdapterLike,
+  input: Omit<CreateLightweightCatchLogInput, "id"> & { id?: string },
+  now = new Date()
+): Promise<
+  | {
+      ok: true;
+      log: LightweightCatchLog;
+      saveResult: WanokuLogStorageModeSaveResult;
+    }
+  | {
+      ok: false;
+      message: string;
+    }
+> {
+  try {
+    const log = createLightweightCatchLog({
+      ...input,
+      id: input.id ?? createWanokuCatchLogId()
+    });
+    const existing = await getWanokuCatchLogsForMode(mode, localAdapter, indexedDbAdapter);
+    const saveResult = await saveWanokuCatchLogsForMode(mode, localAdapter, indexedDbAdapter, [log, ...existing], now);
+
+    return {
+      ok: true,
+      log,
+      saveResult
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "釣果ログの作成に失敗しました。"
+    };
+  }
+}
+
 export function deleteWanokuCatchLog(
   adapter: LocalStorageAdapter<WanokuDemoStorageKey>,
   id: string
@@ -210,6 +315,23 @@ export function deleteWanokuCatchLog(
   return saveWanokuCatchLogs(
     adapter,
     existing.filter((log) => log.id !== id)
+  );
+}
+
+export async function deleteWanokuCatchLogForMode(
+  mode: WanokuLogStorageMode,
+  localAdapter: LocalStorageAdapter<WanokuDemoStorageKey>,
+  indexedDbAdapter: WanokuIndexedDbAdapterLike,
+  id: string,
+  now = new Date()
+): Promise<WanokuLogStorageModeSaveResult> {
+  const existing = await getWanokuCatchLogsForMode(mode, localAdapter, indexedDbAdapter);
+  return saveWanokuCatchLogsForMode(
+    mode,
+    localAdapter,
+    indexedDbAdapter,
+    existing.filter((log) => log.id !== id),
+    now
   );
 }
 
@@ -486,6 +608,43 @@ settings: ${describeWanokuSaveResult(result.settingsResult)}
 catchLogs: ${describeWanokuSaveResult(result.catchLogsResult)}`;
 }
 
+export function getWanokuCanonicalSource(mode: WanokuLogStorageMode): WanokuLogStorageTarget {
+  return mode === "indexedDB" ? "indexedDB" : "localStorage";
+}
+
+export function describeWanokuLogStorageMode(mode: WanokuLogStorageMode): string {
+  switch (mode) {
+    case "localStorage":
+      return "localStorage";
+    case "indexedDB":
+      return "IndexedDB";
+    case "dual-write":
+      return "dual-write（正本: localStorage）";
+  }
+}
+
+export function describeWanokuLogStorageModeSaveResult(result: WanokuLogStorageModeSaveResult): string {
+  const statusText =
+    result.status === "success"
+      ? "保存成功"
+      : result.status === "partial"
+        ? "一部保存失敗"
+        : "保存失敗";
+  const failedText = result.failedTargets.length > 0 ? result.failedTargets.join(", ") : "なし";
+  const localText = result.localStorageResult ? describeWanokuSaveResult(result.localStorageResult) : "対象外";
+  const indexedDbText = result.indexedDbResult ? describeWanokuSaveResult(result.indexedDbResult) : "対象外";
+
+  return `軽量釣果ログ 保存結果:
+状態: ${statusText}
+保存先モード: ${describeWanokuLogStorageMode(result.mode)}
+正本: ${result.canonicalSource}
+最終保存時刻: ${result.savedAtIso}
+件数: catchLogs=${result.catchLogCount}
+失敗先: ${failedText}
+localStorage: ${localText}
+IndexedDB: ${indexedDbText}`;
+}
+
 function describeWanokuIndexedDbLoadLine<Value>(result: LoadJsonResult<WanokuDemoStorageKey, Value>): string {
   switch (result.status) {
     case "success":
@@ -497,6 +656,14 @@ function describeWanokuIndexedDbLoadLine<Value>(result: LoadJsonResult<WanokuDem
     case "failed":
       return `読込失敗: key=${result.key}, mode=${result.mode}, reason=${result.reason}`;
   }
+}
+
+function isDurableSaveSuccess(result: SaveResult<WanokuDemoStorageKey>): boolean {
+  return result.status === "success";
+}
+
+function getWanokuTargetCount(mode: WanokuLogStorageMode): number {
+  return mode === "dual-write" ? 2 : 1;
 }
 
 function createWanokuCatchLogId(): string {

@@ -44,6 +44,19 @@ export type RunosDemoBackupData = {
   runLogs: LightweightRunLog[];
 };
 
+export type RunosLogStorageMode = "localStorage" | "indexedDB" | "dual-write";
+export type RunosLogStorageTarget = "localStorage" | "indexedDB";
+export type RunosLogStorageModeSaveResult = {
+  status: "success" | "partial" | "failed";
+  mode: RunosLogStorageMode;
+  canonicalSource: RunosLogStorageTarget;
+  savedAtIso: string;
+  runLogCount: number;
+  localStorageResult?: SaveResult<RunosDemoStorageKey>;
+  indexedDbResult?: SaveResult<RunosDemoStorageKey>;
+  failedTargets: readonly RunosLogStorageTarget[];
+};
+
 export type RunosIndexedDbDemoSaveResult = {
   dbName: typeof RUNOS_INDEXEDDB_DB_NAME;
   storeName: typeof RUNOS_INDEXEDDB_STORE_NAME;
@@ -168,6 +181,60 @@ export function saveRunosRunLogs(
   return adapter.saveJson(RUNOS_DEMO_RUN_LOGS_KEY, logs);
 }
 
+export async function loadRunosRunLogsFromIndexedDb(
+  adapter: RunosIndexedDbAdapterLike
+): Promise<LoadJsonResult<RunosDemoStorageKey, LightweightRunLog[]>> {
+  return adapter.loadJson(RUNOS_DEMO_RUN_LOGS_KEY, isLightweightRunLogArray);
+}
+
+export async function getRunosRunLogsForMode(
+  mode: RunosLogStorageMode,
+  localAdapter: LocalStorageAdapter<RunosDemoStorageKey>,
+  indexedDbAdapter: RunosIndexedDbAdapterLike
+): Promise<LightweightRunLog[]> {
+  if (getRunosCanonicalSource(mode) === "localStorage") {
+    return getRunosRunLogsOrEmpty(localAdapter);
+  }
+
+  const result = await loadRunosRunLogsFromIndexedDb(indexedDbAdapter);
+  return result.status === "success" ? result.value : [];
+}
+
+export async function saveRunosRunLogsForMode(
+  mode: RunosLogStorageMode,
+  localAdapter: LocalStorageAdapter<RunosDemoStorageKey>,
+  indexedDbAdapter: RunosIndexedDbAdapterLike,
+  logs: LightweightRunLog[],
+  now = new Date()
+): Promise<RunosLogStorageModeSaveResult> {
+  const canonicalSource = getRunosCanonicalSource(mode);
+  const localStorageResult =
+    mode === "localStorage" || mode === "dual-write" ? saveRunosRunLogs(localAdapter, logs) : undefined;
+  const indexedDbResult =
+    mode === "indexedDB" || mode === "dual-write"
+      ? await indexedDbAdapter.saveJson(RUNOS_DEMO_RUN_LOGS_KEY, logs)
+      : undefined;
+  const failedTargets: RunosLogStorageTarget[] = [];
+
+  if (localStorageResult && !isDurableSaveSuccess(localStorageResult)) {
+    failedTargets.push("localStorage");
+  }
+  if (indexedDbResult && !isDurableSaveSuccess(indexedDbResult)) {
+    failedTargets.push("indexedDB");
+  }
+
+  return {
+    status: failedTargets.length === 0 ? "success" : failedTargets.length === getRunosTargetCount(mode) ? "failed" : "partial",
+    mode,
+    canonicalSource,
+    savedAtIso: now.toISOString(),
+    runLogCount: logs.length,
+    localStorageResult,
+    indexedDbResult,
+    failedTargets
+  };
+}
+
 export function addRunosRunLog(
   adapter: LocalStorageAdapter<RunosDemoStorageKey>,
   input: Omit<CreateLightweightRunLogInput, "id"> & { id?: string }
@@ -202,6 +269,44 @@ export function addRunosRunLog(
   }
 }
 
+export async function addRunosRunLogForMode(
+  mode: RunosLogStorageMode,
+  localAdapter: LocalStorageAdapter<RunosDemoStorageKey>,
+  indexedDbAdapter: RunosIndexedDbAdapterLike,
+  input: Omit<CreateLightweightRunLogInput, "id"> & { id?: string },
+  now = new Date()
+): Promise<
+  | {
+      ok: true;
+      log: LightweightRunLog;
+      saveResult: RunosLogStorageModeSaveResult;
+    }
+  | {
+      ok: false;
+      message: string;
+    }
+> {
+  try {
+    const log = createLightweightRunLog({
+      ...input,
+      id: input.id ?? createRunosRunLogId()
+    });
+    const existing = await getRunosRunLogsForMode(mode, localAdapter, indexedDbAdapter);
+    const saveResult = await saveRunosRunLogsForMode(mode, localAdapter, indexedDbAdapter, [log, ...existing], now);
+
+    return {
+      ok: true,
+      log,
+      saveResult
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "ラン記録の作成に失敗しました。"
+    };
+  }
+}
+
 export function deleteRunosRunLog(
   adapter: LocalStorageAdapter<RunosDemoStorageKey>,
   id: string
@@ -210,6 +315,23 @@ export function deleteRunosRunLog(
   return saveRunosRunLogs(
     adapter,
     existing.filter((log) => log.id !== id)
+  );
+}
+
+export async function deleteRunosRunLogForMode(
+  mode: RunosLogStorageMode,
+  localAdapter: LocalStorageAdapter<RunosDemoStorageKey>,
+  indexedDbAdapter: RunosIndexedDbAdapterLike,
+  id: string,
+  now = new Date()
+): Promise<RunosLogStorageModeSaveResult> {
+  const existing = await getRunosRunLogsForMode(mode, localAdapter, indexedDbAdapter);
+  return saveRunosRunLogsForMode(
+    mode,
+    localAdapter,
+    indexedDbAdapter,
+    existing.filter((log) => log.id !== id),
+    now
   );
 }
 
@@ -486,6 +608,43 @@ settings: ${describeRunosSaveResult(result.settingsResult)}
 runLogs: ${describeRunosSaveResult(result.runLogsResult)}`;
 }
 
+export function getRunosCanonicalSource(mode: RunosLogStorageMode): RunosLogStorageTarget {
+  return mode === "indexedDB" ? "indexedDB" : "localStorage";
+}
+
+export function describeRunosLogStorageMode(mode: RunosLogStorageMode): string {
+  switch (mode) {
+    case "localStorage":
+      return "localStorage";
+    case "indexedDB":
+      return "IndexedDB";
+    case "dual-write":
+      return "dual-write（正本: localStorage）";
+  }
+}
+
+export function describeRunosLogStorageModeSaveResult(result: RunosLogStorageModeSaveResult): string {
+  const statusText =
+    result.status === "success"
+      ? "保存成功"
+      : result.status === "partial"
+        ? "一部保存失敗"
+        : "保存失敗";
+  const failedText = result.failedTargets.length > 0 ? result.failedTargets.join(", ") : "なし";
+  const localText = result.localStorageResult ? describeRunosSaveResult(result.localStorageResult) : "対象外";
+  const indexedDbText = result.indexedDbResult ? describeRunosSaveResult(result.indexedDbResult) : "対象外";
+
+  return `軽量ラン記録 保存結果:
+状態: ${statusText}
+保存先モード: ${describeRunosLogStorageMode(result.mode)}
+正本: ${result.canonicalSource}
+最終保存時刻: ${result.savedAtIso}
+件数: runLogs=${result.runLogCount}
+失敗先: ${failedText}
+localStorage: ${localText}
+IndexedDB: ${indexedDbText}`;
+}
+
 function describeRunosIndexedDbLoadLine<Value>(result: LoadJsonResult<RunosDemoStorageKey, Value>): string {
   switch (result.status) {
     case "success":
@@ -497,6 +656,14 @@ function describeRunosIndexedDbLoadLine<Value>(result: LoadJsonResult<RunosDemoS
     case "failed":
       return `読込失敗: key=${result.key}, mode=${result.mode}, reason=${result.reason}`;
   }
+}
+
+function isDurableSaveSuccess(result: SaveResult<RunosDemoStorageKey>): boolean {
+  return result.status === "success";
+}
+
+function getRunosTargetCount(mode: RunosLogStorageMode): number {
+  return mode === "dual-write" ? 2 : 1;
 }
 
 function createRunosRunLogId(): string {

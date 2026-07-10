@@ -5,27 +5,33 @@ import {
   RUNOS_DEMO_SETTINGS_KEY,
   RUNOS_DEMO_RUN_LOGS_KEY,
   addRunosRunLog,
+  addRunosRunLogForMode,
   createRunosDemoBackupFileName,
   createRunosDemoBackupText,
   createRunosDemoSettings,
   createRunosIndexedDbAdapter,
   createRunosStorageAdapter,
   deleteRunosRunLog,
+  deleteRunosRunLogForMode,
   describeRunosIndexedDbBackupExportResult,
   describeRunosIndexedDbLoadResult,
   describeRunosIndexedDbRestoreResult,
   describeRunosIndexedDbSaveResult,
+  describeRunosLogStorageMode,
+  describeRunosLogStorageModeSaveResult,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
   exportRunosIndexedDbDemoBackupText,
   getRunosRunLogsOrEmpty,
+  getRunosRunLogsForMode,
   isRunosDemoSettings,
   loadRunosDemoFromIndexedDb,
   loadRunosDemoBackupData,
   restoreRunosIndexedDbDemoBackupText,
   restoreRunosDemoBackupText,
   saveRunosDemoToIndexedDb,
+  type RunosLogStorageMode,
   writeRunosDemoCorruptJson
 } from "./storageDemo";
 
@@ -41,6 +47,7 @@ const samplePace = averagePaceSecondsPerKilometer(10, 45 * 60);
 const browserStorage = getBrowserLocalStorage();
 const storageAdapter = createRunosStorageAdapter(browserStorage);
 const indexedDbAdapter = createRunosIndexedDbAdapter();
+let runLogStorageMode: RunosLogStorageMode = "localStorage";
 const todayIso = new Date().toISOString().slice(0, 10);
 
 app.innerHTML = `
@@ -100,6 +107,17 @@ app.innerHTML = `
       <p>
         PWA demo keyだけに保存する軽量ログです。FIT解析やlegacyの <code>meridian.v1</code> には接続していません。
       </p>
+      <div class="field-grid">
+        <label>
+          保存先モード
+          <select id="run-log-storage-mode">
+            <option value="localStorage" selected>localStorage（既定）</option>
+            <option value="indexedDB">IndexedDB</option>
+            <option value="dual-write">dual-write（正本: localStorage）</option>
+          </select>
+        </label>
+      </div>
+      <pre id="run-log-storage-status" aria-live="polite">現在の保存先モード: localStorage / 正本: localStorage / 最終保存: 未実行</pre>
       <form id="run-log-form" class="log-form">
         <div class="field-grid">
           <label>
@@ -168,6 +186,8 @@ const backupImportInput = document.querySelector<HTMLInputElement>("#backup-impo
 const indexedDbBackupImportInput = document.querySelector<HTMLInputElement>("#idb-backup-import");
 const runLogForm = document.querySelector<HTMLFormElement>("#run-log-form");
 const runLogList = document.querySelector<HTMLDivElement>("#run-log-list");
+const runLogStorageModeSelect = document.querySelector<HTMLSelectElement>("#run-log-storage-mode");
+const runLogStorageStatus = document.querySelector<HTMLPreElement>("#run-log-storage-status");
 const runDateInput = document.querySelector<HTMLInputElement>("#run-date");
 const runDistanceInput = document.querySelector<HTMLInputElement>("#run-distance");
 const runMinutesInput = document.querySelector<HTMLInputElement>("#run-minutes");
@@ -181,6 +201,14 @@ function updateOutput(message: string): void {
 
 function updateIndexedDbOutput(message: string): void {
   if (indexedDbOutput) indexedDbOutput.textContent = message;
+}
+
+function updateRunLogStorageStatus(lastResult?: string): void {
+  if (!runLogStorageStatus) return;
+
+  runLogStorageStatus.textContent = `現在の保存先モード: ${describeRunosLogStorageMode(runLogStorageMode)}
+正本: ${runLogStorageMode === "indexedDB" ? "indexedDB" : "localStorage"}
+最終保存: ${lastResult ?? "未実行"}`;
 }
 
 document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListener("click", () => {
@@ -245,6 +273,9 @@ indexedDbBackupImportInput?.addEventListener("change", () => {
     .then((text) => restoreRunosIndexedDbDemoBackupText(indexedDbAdapter, text))
     .then((result) => {
       updateIndexedDbOutput(describeRunosIndexedDbRestoreResult(result));
+      if (result.status === "restored" && runLogStorageMode === "indexedDB") {
+        renderRunLogs();
+      }
     })
     .catch((error: unknown) => {
       console.warn("[runos-pwa] IndexedDB backup import failed", error);
@@ -301,11 +332,24 @@ document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventLi
   updateOutput(describeRunosLoadResult(result, storageAdapter.mode));
 });
 
+runLogStorageModeSelect?.addEventListener("change", () => {
+  const selected = runLogStorageModeSelect.value;
+  if (selected === "localStorage" || selected === "indexedDB" || selected === "dual-write") {
+    runLogStorageMode = selected;
+    updateRunLogStorageStatus();
+    renderRunLogs();
+  }
+});
+
 runLogForm?.addEventListener("submit", (event) => {
   event.preventDefault();
+  void handleRunLogSubmit();
+});
+
+async function handleRunLogSubmit(): Promise<void> {
   const durationSec = Number(runMinutesInput?.value) * 60 + Number(runSecondsInput?.value);
   const painValue = runPainInput?.value.trim();
-  const result = addRunosRunLog(storageAdapter, {
+  const result = await addRunosRunLogForMode(runLogStorageMode, storageAdapter, indexedDbAdapter, {
     date: runDateInput?.value ?? "",
     distanceKm: Number(runDistanceInput?.value),
     durationSec,
@@ -318,11 +362,13 @@ runLogForm?.addEventListener("submit", (event) => {
     return;
   }
 
-  updateOutput(`ラン記録を保存しました: ${describeRunosSaveResult(result.saveResult)}`);
+  const description = describeRunosLogStorageModeSaveResult(result.saveResult);
+  updateOutput(description);
+  updateRunLogStorageStatus(description);
   if (runNoteInput) runNoteInput.value = "";
   if (runPainInput) runPainInput.value = "";
   renderRunLogs();
-});
+}
 
 function updatePaceDemo(): void {
   const result = calculatePaceDemo({
@@ -340,6 +386,7 @@ paceDistanceInput?.addEventListener("input", updatePaceDemo);
 paceMinutesInput?.addEventListener("input", updatePaceDemo);
 paceSecondsInput?.addEventListener("input", updatePaceDemo);
 updatePaceDemo();
+updateRunLogStorageStatus();
 renderRunLogs();
 
 registerServiceWorker((status) => {
@@ -371,9 +418,13 @@ function downloadTextFile(fileName: string, text: string): void {
 }
 
 function renderRunLogs(): void {
+  void renderRunLogsAsync();
+}
+
+async function renderRunLogsAsync(): Promise<void> {
   if (!runLogList) return;
 
-  const logs = getRunosRunLogsOrEmpty(storageAdapter);
+  const logs = await getRunosRunLogsForMode(runLogStorageMode, storageAdapter, indexedDbAdapter);
   runLogList.replaceChildren();
 
   if (logs.length === 0) {
@@ -400,9 +451,17 @@ function renderRunLogs(): void {
     deleteButton.type = "button";
     deleteButton.textContent = "削除";
     deleteButton.addEventListener("click", () => {
-      const result = deleteRunosRunLog(storageAdapter, log.id);
-      updateOutput(`ラン記録を削除しました: ${describeRunosSaveResult(result)}`);
-      renderRunLogs();
+      deleteRunosRunLogForMode(runLogStorageMode, storageAdapter, indexedDbAdapter, log.id)
+        .then((result) => {
+          const description = describeRunosLogStorageModeSaveResult(result);
+          updateOutput(description);
+          updateRunLogStorageStatus(description);
+          renderRunLogs();
+        })
+        .catch((error: unknown) => {
+          console.warn("[runos-pwa] run log delete failed", error);
+          updateOutput("ラン記録の削除に失敗しました。consoleを確認してください。");
+        });
     });
 
     item.append(title, meta, note, deleteButton);

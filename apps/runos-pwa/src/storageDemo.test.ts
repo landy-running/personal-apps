@@ -6,6 +6,7 @@ import {
   RUNOS_INDEXEDDB_BACKUP_SCHEMA_VERSION,
   RUNOS_INDEXEDDB_BACKUP_TYPE,
   addRunosRunLog,
+  addRunosRunLogForMode,
   createRunosIndexedDbDemoBackupText,
   createRunosDemoBackupText,
   createRunosDemoBackupFileName,
@@ -16,6 +17,7 @@ import {
   describeRunosIndexedDbLoadResult,
   describeRunosIndexedDbRestoreResult,
   describeRunosIndexedDbSaveResult,
+  describeRunosLogStorageModeSaveResult,
   describeRunosLoadResult,
   describeRunosRestoreResult,
   describeRunosSaveResult,
@@ -28,6 +30,7 @@ import {
   parseRunosDemoBackupText,
   restoreRunosIndexedDbDemoBackupText,
   restoreRunosDemoBackupText,
+  saveRunosRunLogsForMode,
   saveRunosDemoToIndexedDb,
   saveRunosRunLogs,
   writeRunosDemoCorruptJson
@@ -89,6 +92,20 @@ class MemoryAsyncJsonAdapter<Key extends string> {
       key,
       value: value as Value,
       bytes: new TextEncoder().encode(rawValue).byteLength
+    };
+  }
+}
+
+class FailingAsyncJsonAdapter<Key extends string> extends MemoryAsyncJsonAdapter<Key> {
+  async saveJson(key: Key, value: unknown): Promise<SaveResult<Key>> {
+    const json = JSON.stringify(value);
+    return {
+      status: "failed",
+      mode: "local",
+      key,
+      reason: "write-failed",
+      bytes: new TextEncoder().encode(json).byteLength,
+      error: new Error("indexedDB write failed")
     };
   }
 }
@@ -306,5 +323,87 @@ describe("RunOS PWA storage demo", () => {
     const badChecksum = JSON.stringify(badChecksumJson);
     const checksumResult = await restoreRunosIndexedDbDemoBackupText(indexedDbAdapter, badChecksum);
     expect(checksumResult).toMatchObject({ status: "rejected", reason: "checksum-mismatch" });
+  });
+
+  it("keeps lightweight run log storage mode on localStorage by default", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createRunosStorageAdapter(storage);
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+
+    const result = await addRunosRunLogForMode(
+      "localStorage",
+      localAdapter,
+      indexedDbAdapter,
+      {
+        id: "run-mode-local",
+        date: "2026-07-10",
+        distanceKm: 5,
+        durationSec: 1500
+      },
+      new Date("2026-07-10T00:03:00.000Z")
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("run log mode save failed in test.");
+    expect(result.saveResult.status).toBe("success");
+    expect(result.saveResult.canonicalSource).toBe("localStorage");
+    expect(storage.getItem(RUNOS_DEMO_RUN_LOGS_KEY)).toContain("run-mode-local");
+    expect(indexedDbAdapter.values.size).toBe(0);
+    expect(describeRunosLogStorageModeSaveResult(result.saveResult)).toContain("正本: localStorage");
+  });
+
+  it("can save lightweight run logs to indexedDB mode without writing localStorage", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createRunosStorageAdapter(storage);
+    const indexedDbAdapter = new MemoryAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+
+    const result = await addRunosRunLogForMode(
+      "indexedDB",
+      localAdapter,
+      indexedDbAdapter,
+      {
+        id: "run-mode-idb",
+        date: "2026-07-10",
+        distanceKm: 5,
+        durationSec: 1500
+      },
+      new Date("2026-07-10T00:04:00.000Z")
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("run log idb mode save failed in test.");
+    expect(result.saveResult.status).toBe("success");
+    expect(result.saveResult.canonicalSource).toBe("indexedDB");
+    expect(storage.getItem(RUNOS_DEMO_RUN_LOGS_KEY)).toBeNull();
+    expect(indexedDbAdapter.values.get(RUNOS_DEMO_RUN_LOGS_KEY)).toContain("run-mode-idb");
+  });
+
+  it("does not treat dual-write as success when indexedDB fails", async () => {
+    const storage = new MemoryStorage();
+    const localAdapter = createRunosStorageAdapter(storage);
+    const failingIndexedDb = new FailingAsyncJsonAdapter<typeof RUNOS_DEMO_SETTINGS_KEY | typeof RUNOS_DEMO_RUN_LOGS_KEY>();
+
+    const result = await saveRunosRunLogsForMode(
+      "dual-write",
+      localAdapter,
+      failingIndexedDb,
+      [
+        {
+          id: "run-mode-dual",
+          date: "2026-07-10",
+          distanceKm: 5,
+          durationSec: 1500,
+          avgPace: 300,
+          note: ""
+        }
+      ],
+      new Date("2026-07-10T00:05:00.000Z")
+    );
+
+    expect(result.status).toBe("partial");
+    expect(result.canonicalSource).toBe("localStorage");
+    expect(result.failedTargets).toEqual(["indexedDB"]);
+    expect(storage.getItem(RUNOS_DEMO_RUN_LOGS_KEY)).toContain("run-mode-dual");
+    expect(describeRunosLogStorageModeSaveResult(result)).toContain("失敗先: indexedDB");
   });
 });

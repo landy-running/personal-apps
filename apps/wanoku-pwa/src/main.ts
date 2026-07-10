@@ -4,27 +4,33 @@ import {
   WANOKU_DEMO_CATCH_LOGS_KEY,
   WANOKU_DEMO_SETTINGS_KEY,
   addWanokuCatchLog,
+  addWanokuCatchLogForMode,
   createWanokuDemoBackupFileName,
   createWanokuDemoBackupText,
   createWanokuDemoSettings,
   createWanokuIndexedDbAdapter,
   createWanokuStorageAdapter,
   deleteWanokuCatchLog,
+  deleteWanokuCatchLogForMode,
   describeWanokuIndexedDbBackupExportResult,
   describeWanokuIndexedDbLoadResult,
   describeWanokuIndexedDbRestoreResult,
   describeWanokuIndexedDbSaveResult,
+  describeWanokuLogStorageMode,
+  describeWanokuLogStorageModeSaveResult,
   describeWanokuLoadResult,
   describeWanokuRestoreResult,
   describeWanokuSaveResult,
   exportWanokuIndexedDbDemoBackupText,
   getWanokuCatchLogsOrEmpty,
+  getWanokuCatchLogsForMode,
   isWanokuDemoSettings,
   loadWanokuDemoFromIndexedDb,
   loadWanokuDemoBackupData,
   restoreWanokuIndexedDbDemoBackupText,
   restoreWanokuDemoBackupText,
   saveWanokuDemoToIndexedDb,
+  type WanokuLogStorageMode,
   writeWanokuDemoCorruptJson
 } from "./storageDemo";
 import { calculateWindDemo, describeWindDemoResult } from "./windDemo";
@@ -40,6 +46,7 @@ if (!app) {
 const browserStorage = getBrowserLocalStorage();
 const storageAdapter = createWanokuStorageAdapter(browserStorage);
 const indexedDbAdapter = createWanokuIndexedDbAdapter();
+let catchLogStorageMode: WanokuLogStorageMode = "localStorage";
 const todayIso = new Date().toISOString().slice(0, 10);
 
 app.innerHTML = `
@@ -99,6 +106,17 @@ app.innerHTML = `
       <p>
         PWA demo keyだけに保存する軽量ログです。潮汐・スコアリング・外部API・legacy Storeキー群には接続していません。
       </p>
+      <div class="field-grid">
+        <label>
+          保存先モード
+          <select id="catch-log-storage-mode">
+            <option value="localStorage" selected>localStorage（既定）</option>
+            <option value="indexedDB">IndexedDB</option>
+            <option value="dual-write">dual-write（正本: localStorage）</option>
+          </select>
+        </label>
+      </div>
+      <pre id="catch-log-storage-status" aria-live="polite">現在の保存先モード: localStorage / 正本: localStorage / 最終保存: 未実行</pre>
       <form id="catch-log-form" class="log-form">
         <div class="field-grid">
           <label>
@@ -162,6 +180,8 @@ const backupImportInput = document.querySelector<HTMLInputElement>("#backup-impo
 const indexedDbBackupImportInput = document.querySelector<HTMLInputElement>("#idb-backup-import");
 const catchLogForm = document.querySelector<HTMLFormElement>("#catch-log-form");
 const catchLogList = document.querySelector<HTMLDivElement>("#catch-log-list");
+const catchLogStorageModeSelect = document.querySelector<HTMLSelectElement>("#catch-log-storage-mode");
+const catchLogStorageStatus = document.querySelector<HTMLPreElement>("#catch-log-storage-status");
 const catchDateInput = document.querySelector<HTMLInputElement>("#catch-date");
 const catchSpotInput = document.querySelector<HTMLInputElement>("#catch-spot");
 const catchTargetInput = document.querySelector<HTMLInputElement>("#catch-target");
@@ -175,6 +195,14 @@ function updateOutput(message: string): void {
 
 function updateIndexedDbOutput(message: string): void {
   if (indexedDbOutput) indexedDbOutput.textContent = message;
+}
+
+function updateCatchLogStorageStatus(lastResult?: string): void {
+  if (!catchLogStorageStatus) return;
+
+  catchLogStorageStatus.textContent = `現在の保存先モード: ${describeWanokuLogStorageMode(catchLogStorageMode)}
+正本: ${catchLogStorageMode === "indexedDB" ? "indexedDB" : "localStorage"}
+最終保存: ${lastResult ?? "未実行"}`;
 }
 
 document.querySelector<HTMLButtonElement>("[data-action='save']")?.addEventListener("click", () => {
@@ -239,6 +267,9 @@ indexedDbBackupImportInput?.addEventListener("change", () => {
     .then((text) => restoreWanokuIndexedDbDemoBackupText(indexedDbAdapter, text))
     .then((result) => {
       updateIndexedDbOutput(describeWanokuIndexedDbRestoreResult(result));
+      if (result.status === "restored" && catchLogStorageMode === "indexedDB") {
+        renderCatchLogs();
+      }
     })
     .catch((error: unknown) => {
       console.warn("[wanoku-pwa] IndexedDB backup import failed", error);
@@ -295,9 +326,22 @@ document.querySelector<HTMLButtonElement>("[data-action='corrupt']")?.addEventLi
   updateOutput(describeWanokuLoadResult(result, storageAdapter.mode));
 });
 
+catchLogStorageModeSelect?.addEventListener("change", () => {
+  const selected = catchLogStorageModeSelect.value;
+  if (selected === "localStorage" || selected === "indexedDB" || selected === "dual-write") {
+    catchLogStorageMode = selected;
+    updateCatchLogStorageStatus();
+    renderCatchLogs();
+  }
+});
+
 catchLogForm?.addEventListener("submit", (event) => {
   event.preventDefault();
-  const result = addWanokuCatchLog(storageAdapter, {
+  void handleCatchLogSubmit();
+});
+
+async function handleCatchLogSubmit(): Promise<void> {
+  const result = await addWanokuCatchLogForMode(catchLogStorageMode, storageAdapter, indexedDbAdapter, {
     date: catchDateInput?.value ?? "",
     spotName: catchSpotInput?.value ?? "",
     targetFish: catchTargetInput?.value ?? "",
@@ -311,11 +355,13 @@ catchLogForm?.addEventListener("submit", (event) => {
     return;
   }
 
-  updateOutput(`釣果ログを保存しました: ${describeWanokuSaveResult(result.saveResult)}`);
+  const description = describeWanokuLogStorageModeSaveResult(result.saveResult);
+  updateOutput(description);
+  updateCatchLogStorageStatus(description);
   if (catchNoteInput) catchNoteInput.value = "";
   if (catchLureInput) catchLureInput.value = "";
   renderCatchLogs();
-});
+}
 
 function updateWindDemo(): void {
   const result = calculateWindDemo(Number(windAngleAInput?.value), Number(windAngleBInput?.value));
@@ -328,6 +374,7 @@ function updateWindDemo(): void {
 windAngleAInput?.addEventListener("input", updateWindDemo);
 windAngleBInput?.addEventListener("input", updateWindDemo);
 updateWindDemo();
+updateCatchLogStorageStatus();
 renderCatchLogs();
 
 registerServiceWorker((status) => {
@@ -359,9 +406,13 @@ function downloadTextFile(fileName: string, text: string): void {
 }
 
 function renderCatchLogs(): void {
+  void renderCatchLogsAsync();
+}
+
+async function renderCatchLogsAsync(): Promise<void> {
   if (!catchLogList) return;
 
-  const logs = getWanokuCatchLogsOrEmpty(storageAdapter);
+  const logs = await getWanokuCatchLogsForMode(catchLogStorageMode, storageAdapter, indexedDbAdapter);
   catchLogList.replaceChildren();
 
   if (logs.length === 0) {
@@ -388,9 +439,17 @@ function renderCatchLogs(): void {
     deleteButton.type = "button";
     deleteButton.textContent = "削除";
     deleteButton.addEventListener("click", () => {
-      const result = deleteWanokuCatchLog(storageAdapter, log.id);
-      updateOutput(`釣果ログを削除しました: ${describeWanokuSaveResult(result)}`);
-      renderCatchLogs();
+      deleteWanokuCatchLogForMode(catchLogStorageMode, storageAdapter, indexedDbAdapter, log.id)
+        .then((result) => {
+          const description = describeWanokuLogStorageModeSaveResult(result);
+          updateOutput(description);
+          updateCatchLogStorageStatus(description);
+          renderCatchLogs();
+        })
+        .catch((error: unknown) => {
+          console.warn("[wanoku-pwa] catch log delete failed", error);
+          updateOutput("釣果ログの削除に失敗しました。consoleを確認してください。");
+        });
     });
 
     item.append(title, meta, note, deleteButton);
