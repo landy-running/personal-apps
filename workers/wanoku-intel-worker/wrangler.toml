@@ -1,4 +1,4 @@
-name = "wanoku-intel-worker"
+﻿name = "wanoku-intel-worker"
 main = "src/index.js"
 compatibility_date = "2026-07-01"
 
@@ -8,9 +8,10 @@ LOCAL_DEV_ORIGINS = "http://localhost:4173,http://127.0.0.1:4173,http://localhos
 
 [[d1_databases]]
 binding = "WANOKU_INTEL_D1"
-database_name = "wanoku-intel"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_name = "wanoku-intel-db"
+database_id = "a9ae3512-3fda-4a47-a0bb-782e2575b398"
 migrations_dir = "migrations"
 
 [triggers]
 crons = ["0 */3 * * *"]
+
