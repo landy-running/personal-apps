@@ -7,6 +7,30 @@ export {
   type LightweightCatchLog
 } from "./catchLog";
 export {
+  ENVIRONMENTAL_REQUIRED_FIELDS,
+  ENVIRONMENTAL_SCHEMA_VERSION,
+  ENVIRONMENT_WINDOW_HOURS,
+  buildEnvironmentalFeatureVector,
+  calculateDataFreshness,
+  calculateEnvironmentalQuality,
+  calculateMissingFields,
+  calculateMissingRate,
+  detectEnvironmentalContradictions,
+  detectRapidEnvironmentalChanges,
+  environmentalSnapshotKey,
+  type DataProvenance,
+  type EnvironmentWindowHour,
+  type EnvironmentWindowKey,
+  type EnvironmentalContradiction,
+  type EnvironmentalFeatureVector,
+  type EnvironmentalQualityReport,
+  type EnvironmentalSnapshot,
+  type MarineObservation,
+  type RapidChange,
+  type WeatherObservation,
+  type WindContinuity
+} from "./environment";
+export {
   DEFAULT_SPECIES_FRESHNESS,
   calculateFreshness,
   findConflictingEvidence,
@@ -16,7 +40,6 @@ export {
   type BacktestResult,
   type ConflictCandidate,
   type DuplicateCandidate,
-  type EnvironmentalSnapshot,
   type EvidenceEvent,
   type EvidenceSource,
   type EvidenceSourceKind,
