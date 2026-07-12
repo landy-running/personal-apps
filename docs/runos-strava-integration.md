@@ -200,6 +200,41 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 - RunOS分類は最初は既存CSV取込に近く、距離・名称・workout情報から `easy` / `long` / `interval` / `race` などへ寄せる
 - 分類が曖昧な場合はプレビュー画面で修正できる前提にする
 
+### 実際に保存するStrava由来フィールド
+
+手動インポートで `DB.activities` へ追加する活動は、既存の `normalizeActivity()` を通した最小活動形に、Strava由来識別情報を付け足す。
+
+既存活動と共通する主なフィールド:
+
+- `id`
+- `date`
+- `type`
+- `km`
+- `durSec`
+- `hrAvg`
+- `hrMax`
+- `elevM`
+- `cadence`
+- `note`
+- `source`
+
+Strava由来として追加するフィールド:
+
+- `externalId`: `strava:<id>`
+- `sourceId`: Stravaの生ID文字列
+- `stravaActivityId`: Stravaの生ID文字列
+- `sourceName`: `Strava API`
+- `startDateLocal`: Strava `start_date_local`
+- `startUnix`: Strava `start_date` を優先してUnix秒へ変換した値。なければ `start_date_local` から補完
+- `elapsedSec`: Strava `elapsed_time` がある場合のみ
+- `importedAt`: インポート実行時刻
+
+互換性メモ:
+
+- 既存画面・集計は主に `date`、`type`、`km`、`durSec`、`hrAvg`、`elevM` を参照するため、Strava由来活動も手入力/CSV由来活動と同じ最小形で扱う
+- `startUnix` はFIT由来活動と同じく、最新活動・回復時間系の判定で利用され得る
+- laps / streams / route / bests はStrava SummaryActivity段階では保存しないため、詳細ストリーム前提の分析では手入力/CSV相当の扱いになる
+
 ## 10. duplicate判定方針
 
 初期の安全側判定:
@@ -238,12 +273,33 @@ Strava SummaryActivityからRunOSのプレビュー形式へ変換する。
 - 重複候補は「重複の可能性あり」と表示し、初期状態では選択しない
 - 近似duplicateは初期状態では選択しないが、ユーザーが明示的にチェックした場合はインポート対象にできる
 - exact duplicate（`externalId` / `sourceId` / `stravaActivityId` が一致）は取り込み済みとして扱い、再取り込みしない
+- 過去実装との差異を吸収するため、`sourceId` が `strava:<id>` 形式でも生ID形式でもexact duplicateとして扱う
+- インポート用 `id` が一致する場合もexact duplicateとして扱う
 - 近似duplicateは日付または開始時刻、距離差2%以内、時間差2%以内で判定する
 - インポート前にJSONバックアップ書き出し導線と確認ダイアログを出す
 - 選択された活動だけを `DB.activities` へ追加し、保存は既存 `save()` 経由で行う
 - `save()` がfalseの場合は成功通知を出さず、メモリ上の追加もロールバックする
 - 取り込む活動には `source: "strava_api"`、`externalId: "strava:<id>"`、`sourceId`、`stravaActivityId`、`sourceName`、`startDateLocal`、`importedAt` を付け、Strava由来と分かるようにする
 - `refresh_token` / `access_token` / `client_secret` はRunOS HTMLやlocalStorageへ保存しない
+
+既知の制限:
+
+- Strava SummaryActivityのみを使うため、ラップ、ストリーム、GPSルート、best effortsの詳細は取り込まない
+- `durSec` は `moving_time` ベース、`elapsedSec` は参考値として保持する
+- `date` は `start_date_local` の日付部分を使う。週間集計、今日判定、月間カレンダーは既存RunOSのローカル日付処理に従う
+- 種別分類はWorker側の簡易分類とRunOS既存分類ロジックの範囲に限られる。インターバル詳細はstreams未取得のため精密検出しない
+
+検証項目:
+
+- Today / Log / Fitness / Insights / Season / Libraryで `NaN`、`undefined`、不自然な空表示が出ないこと
+- Log一覧と活動詳細で距離、時間、ペース、心拍、標高が表示可能なこと
+- Fitness / Insights のTRIMP、CTL、ATL、TSB、ACWRが保存後に計算できること
+- `startDateLocal` と `date` がStrava上のローカル日付と一致すること
+- `startUnix` がある活動は回復時間・最新活動判定で極端に未来/過去へ飛ばないこと
+- exact duplicate、`externalId`、`sourceId`、`stravaActivityId`、インポート用 `id` の一致で再取り込みされないこと
+- ページングで同じ活動が再取得されても一覧へ重複追加されないこと
+- `save()` 成功時のみ成功通知を出し、失敗時はメモリ上の追加をロールバックすること
+- 破損データリカバリ中はインポート不可であること
 
 将来段階:
 

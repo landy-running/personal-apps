@@ -2462,6 +2462,16 @@ function stravaExternalId(preview){
   const raw=preview&&preview.rawSummary||{};
   return preview&&preview.externalId ? String(preview.externalId) : (raw.id!=null?`strava:${raw.id}`:null);
 }
+function stravaRawActivityId(preview){
+  const raw=preview&&preview.rawSummary||{};
+  const ext=stravaExternalId(preview);
+  if(raw.id!=null) return String(raw.id);
+  return ext?ext.replace(/^strava:/,''):null;
+}
+function stravaImportActivityId(preview){
+  const ext=stravaExternalId(preview);
+  return ext?`strava_${String(ext).replace(/[^a-zA-Z0-9_-]/g,'_')}`:null;
+}
 function stravaPreviewKey(preview){
   const ext=stravaExternalId(preview);
   if(ext) return ext;
@@ -2480,8 +2490,15 @@ function existingStartMs(a){
 function findStravaDuplicate(preview){
   const a=preview&&preview.runosActivity||{};
   const externalId=stravaExternalId(preview);
-  const sourceId=externalId&&externalId.replace(/^strava:/,'');
-  const exact=(DB.activities||[]).find(x=>externalId&&(x.externalId===externalId||x.sourceId===externalId||x.stravaActivityId===sourceId));
+  const sourceId=stravaRawActivityId(preview);
+  const importId=stravaImportActivityId(preview);
+  const exact=(DB.activities||[]).find(x=>externalId&&(
+    x.externalId===externalId||
+    x.sourceId===externalId||
+    (sourceId&&String(x.sourceId)===sourceId)||
+    (sourceId&&String(x.stravaActivityId)===sourceId)||
+    (importId&&x.id===importId)
+  ));
   if(exact) return {kind:'exact',activity:exact,message:'取り込み済み'};
   const km=Number(a.km||0),dur=Number(a.durSec||0),date=a.date;
   if(!km||!dur||!date) return null;
@@ -2650,17 +2667,21 @@ function stravaPreviewToActivity(preview){
   const km=Number(a.km), durSec=Math.round(Number(a.durSec));
   if(!a.date||!isFinite(km)||km<=0||!isFinite(durSec)||durSec<60) return null;
   const externalId=stravaExternalId(preview);
-  const sourceId=externalId&&externalId.replace(/^strava:/,'');
-  const id=externalId?`strava_${String(externalId).replace(/[^a-zA-Z0-9_-]/g,'_')}`:undefined;
+  const sourceId=stravaRawActivityId(preview);
+  const id=stravaImportActivityId(preview)||undefined;
   const act=normalizeActivity({id,date:a.date,type:a.type||'easy',km,durSec,
     hrAvg:a.hrAvg||null,hrMax:a.hrMax||null,elevM:a.elevM||null,cadence:a.cadence||null,
     note:a.note||raw.name||'',source:'strava_api'});
   act.externalId=externalId;
-  act.sourceId=externalId;
+  act.sourceId=sourceId||externalId;
   act.stravaActivityId=sourceId||null;
   act.source='strava_api';
   act.sourceName='Strava API';
   act.startDateLocal=raw.start_date_local||null;
+  const startMs=Date.parse(raw.start_date||raw.start_date_local||'');
+  if(Number.isFinite(startMs)) act.startUnix=Math.floor(startMs/1000);
+  const elapsedSec=Math.round(Number(raw.elapsed_time||0));
+  if(Number.isFinite(elapsedSec)&&elapsedSec>0) act.elapsedSec=elapsedSec;
   act.importedAt=new Date().toISOString();
   return act;
 }
@@ -2684,6 +2705,7 @@ function importSelectedStravaActivities(){
     if(ext&&seen.has(ext)){ dups++; return; }
     const act=stravaPreviewToActivity(p);
     if(!act){ failed++; return; }
+    if(DB.activities.some(x=>x.id===act.id)){ dups++; return; }
     if(ext) seen.add(ext);
     DB.activities.push(act); added++;
   });
@@ -5032,8 +5054,8 @@ async function wxRefresh(silent){
 const IMPORT_ADAPTERS={
   fit:{ label:'FITファイル', kind:'file', ready:true },
   strava_export:{ label:'Strava一括エクスポート (activities.csv)', kind:'file', ready:true },
-  strava_api:{ label:'Strava API 自動同期', kind:'oauth', ready:false,
-    note:'OAuth認証にはリダイレクト先が必要なため、単一HTMLでは中継(Cloudflare Worker等)を用意した時点で有効化します。データ形状は既に対応済み。' }
+  strava_api:{ label:'Strava API 手動インポート', kind:'oauth', ready:true,
+    note:'Strava APIはCloudflare Worker経由で接続します。自動同期ではなく、プレビュー後に選択した活動だけを既存save()経由で取り込みます。' }
 };
 function normalizeActivity(n){
   // canonical minimal shape shared by all adapters
