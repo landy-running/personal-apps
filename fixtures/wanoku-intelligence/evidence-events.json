@@ -1,0 +1,139 @@
+[
+  {
+    "id": "sns-seabass-ariake-20260710",
+    "source": {
+      "id": "manual-sns",
+      "name": "手動投入SNS投稿",
+      "kind": "sns",
+      "reliabilityPrior": 0.55,
+      "termsNote": "公開投稿の手動URL投入を想定。無断スクレイピングには依存しない。"
+    },
+    "sourceId": "sns-post-001",
+    "observedAt": "2026-07-10T21:20:00+09:00",
+    "publishedAt": "2026-07-10T23:05:00+09:00",
+    "species": [{ "species": "シーバス", "count": 2, "sizeCm": 58, "behavior": "明暗で捕食" }],
+    "location": { "label": "有明運河周辺", "lat": 35.6368, "lon": 139.7898, "radiusM": 1200, "confidence": 0.55 },
+    "locationConfidence": 0.55,
+    "sourceReliability": 0.52,
+    "timeConfidence": 0.76,
+    "freshness": 0.9,
+    "duplicateGroupId": "grp-seabass-ariake-20260710",
+    "evidenceUrl": "https://example.com/sns/seabass-ariake-20260710",
+    "title": "有明でシーバス",
+    "rawText": "昨夜21時過ぎ、有明運河の明暗でシーバス2本。ベイト多め。",
+    "extractedFacts": ["実釣は7/10夜", "有明運河周辺", "シーバス2本", "ベイト多め"]
+  },
+  {
+    "id": "youtube-chinu-canal-20260708",
+    "source": {
+      "id": "youtube-channel-alpha",
+      "name": "湾奥釣行YouTube",
+      "kind": "youtube",
+      "reliabilityPrior": 0.62,
+      "url": "https://www.youtube.com/@example"
+    },
+    "sourceId": "yt-video-001",
+    "observedAt": "2026-07-08T19:00:00+09:00",
+    "publishedAt": "2026-07-11T18:00:00+09:00",
+    "species": [{ "species": "チニング", "count": 3, "sizeCm": 42, "behavior": "ボトムでバイト" }],
+    "location": { "label": "港湾部の運河筋", "lat": 35.6502, "lon": 139.7891, "radiusM": 2500, "confidence": 0.48 },
+    "locationConfidence": 0.48,
+    "sourceReliability": 0.64,
+    "timeConfidence": 0.7,
+    "freshness": 0.6,
+    "evidenceUrl": "https://www.youtube.com/watch?v=example001",
+    "title": "夏の湾奥チニング",
+    "rawText": "撮影日は公開日の3日前。港湾部の運河でチニング連発。",
+    "extractedFacts": ["投稿日と実釣日が異なる", "運河筋", "チニング3枚", "ボトム"]
+  },
+  {
+    "id": "shop-aji-report-20260711",
+    "source": {
+      "id": "shop-report-beta",
+      "name": "湾奥釣具店釣果",
+      "kind": "shop",
+      "reliabilityPrior": 0.82,
+      "url": "https://example.com/shop"
+    },
+    "sourceId": "shop-report-20260711-aji",
+    "observedAt": "2026-07-11T04:30:00+09:00",
+    "publishedAt": "2026-07-11T10:00:00+09:00",
+    "species": [{ "species": "アジ", "count": 12, "sizeCm": 18, "behavior": "朝マズメ回遊" }],
+    "location": { "label": "若洲方面", "lat": 35.6163, "lon": 139.8324, "radiusM": 1800, "confidence": 0.72 },
+    "locationConfidence": 0.72,
+    "sourceReliability": 0.84,
+    "timeConfidence": 0.86,
+    "freshness": 0.95,
+    "evidenceUrl": "https://example.com/shop/reports/20260711-aji",
+    "title": "若洲方面アジ釣果",
+    "rawText": "朝マズメに若洲方面でアジの回遊。小型中心だが数が出た。",
+    "extractedFacts": ["朝マズメ", "若洲方面", "アジ12匹", "小型中心"]
+  },
+  {
+    "id": "official-env-tokyobay-20260711",
+    "source": {
+      "id": "official-environment",
+      "name": "公的環境データ",
+      "kind": "official",
+      "reliabilityPrior": 0.93,
+      "termsNote": "公式API/RSSまたは公開データの利用を優先する。"
+    },
+    "sourceId": "env-20260711-tokyobay",
+    "observedAt": "2026-07-11T09:00:00+09:00",
+    "publishedAt": "2026-07-11T09:20:00+09:00",
+    "species": [{ "species": "environment", "behavior": "水温・風・潮位" }],
+    "location": { "label": "東京湾奥広域", "lat": 35.62, "lon": 139.82, "radiusM": 12000, "confidence": 0.9 },
+    "locationConfidence": 0.9,
+    "sourceReliability": 0.94,
+    "timeConfidence": 0.95,
+    "freshness": 1,
+    "evidenceUrl": "https://example.com/official/environment/tokyobay",
+    "title": "東京湾奥環境データ",
+    "rawText": "水温27.1℃、南風、下げ潮。降雨後の濁りあり。",
+    "extractedFacts": ["水温27.1℃", "南風", "下げ潮", "降雨後の濁り"]
+  },
+  {
+    "id": "sns-vague-mebaru-20260702",
+    "source": {
+      "id": "manual-sns",
+      "name": "手動投入SNS投稿",
+      "kind": "sns",
+      "reliabilityPrior": 0.55
+    },
+    "sourceId": "sns-post-vague-001",
+    "publishedAt": "2026-07-02T23:50:00+09:00",
+    "species": [{ "species": "メバル", "count": 1, "sizeCm": 20 }],
+    "location": { "label": "湾奥某所", "radiusM": 8000, "confidence": 0.25 },
+    "locationConfidence": 0.25,
+    "sourceReliability": 0.45,
+    "timeConfidence": 0.35,
+    "freshness": 0.25,
+    "evidenceUrl": "https://example.com/sns/vague-mebaru",
+    "title": "湾奥某所メバル",
+    "rawText": "数日前、湾奥某所でメバル。場所は伏せます。",
+    "extractedFacts": ["実釣時刻不明", "場所が曖昧", "メバル"]
+  },
+  {
+    "id": "repost-seabass-ariake-20260710",
+    "source": {
+      "id": "summary-blog",
+      "name": "釣果まとめブログ",
+      "kind": "rss",
+      "reliabilityPrior": 0.42
+    },
+    "sourceId": "rss-repost-001",
+    "observedAt": "2026-07-10T21:20:00+09:00",
+    "publishedAt": "2026-07-11T08:00:00+09:00",
+    "species": [{ "species": "シーバス", "count": 2, "sizeCm": 58 }],
+    "location": { "label": "有明運河周辺", "lat": 35.6367, "lon": 139.7897, "radiusM": 1500, "confidence": 0.5 },
+    "locationConfidence": 0.5,
+    "sourceReliability": 0.42,
+    "timeConfidence": 0.62,
+    "freshness": 0.82,
+    "duplicateGroupId": "grp-seabass-ariake-20260710",
+    "evidenceUrl": "https://example.com/rss/repost-seabass-ariake",
+    "title": "SNS釣果まとめ 有明シーバス",
+    "rawText": "SNS投稿から転載。有明運河のシーバス2本。",
+    "extractedFacts": ["転載", "有明運河周辺", "シーバス2本"]
+  }
+]
