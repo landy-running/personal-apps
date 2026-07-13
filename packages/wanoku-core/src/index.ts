@@ -31,6 +31,37 @@ export {
   type WindContinuity
 } from "./environment";
 export {
+  calculateGraphSummary,
+  findShortestPathByDistance,
+  getAdjacentNodes,
+  getConnectedComponents,
+  getHabitatNode,
+  getIncomingEdges,
+  getOutgoingEdges,
+  haversineDistanceKm,
+  roundDistanceKm,
+  validateHabitatGraph,
+  type BayPosition,
+  type ConnectionType,
+  type DepthBand,
+  type Directionality,
+  type HabitatEdge,
+  type HabitatGraph,
+  type HabitatGraphSummary,
+  type HabitatNode,
+  type HabitatType,
+  type HabitatValidationResult,
+  type ShortestHabitatPath,
+  type WaterBodyType
+} from "./habitat";
+export {
+  HABITAT_GRAPH_VERSION,
+  INITIAL_HABITAT_EDGE_SEEDS,
+  createHabitatNodeFromEnvironmentNode,
+  createInitialHabitatGraph,
+  type EnvironmentNodeSeed
+} from "./habitat-fixtures";
+export {
   DEFAULT_SPECIES_FRESHNESS,
   calculateFreshness,
   findConflictingEvidence,
