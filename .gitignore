@@ -4,3 +4,5 @@ coverage/
 .vite/
 *.local
 
+
+backups/d1/*.sql
