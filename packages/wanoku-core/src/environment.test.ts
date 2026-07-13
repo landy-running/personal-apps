@@ -12,9 +12,11 @@ import {
 const baseSnapshot: EnvironmentalSnapshot = {
   nodeId: "tokyo-bay-inner-01",
   observedAt: "2026-07-12T00:00:00+09:00",
+  collectedAt: "2026-07-11T18:05:00+09:00",
   forecastIssuedAt: "2026-07-11T18:00:00+09:00",
   latitude: 35.58,
   longitude: 139.82,
+  coordinateDistanceKm: 2.606,
   windSpeed: 4,
   windDirection: 350,
   windGust: 8,
@@ -51,6 +53,13 @@ describe("wanoku environmental spine core", () => {
 
     expect(left).toBe(right);
     expect(left).toContain("tokyo-bay-inner-01");
+    expect(left).toContain("issued:2026-07-11T18:00:00+09:00");
+  });
+
+  it("uses collectedAt as the forecast vintage when forecastIssuedAt is unknown", () => {
+    const key = environmentalSnapshotKey(snapshot({ forecastIssuedAt: null }));
+
+    expect(key).toContain("collected:2026-07-11T18:05:00+09:00");
   });
 
   it("reports missing fields and quality without treating partial data as success", () => {
@@ -65,6 +74,16 @@ describe("wanoku environmental spine core", () => {
     const quality = calculateEnvironmentalQuality(partial, "2026-07-12T03:00:00+09:00");
     expect(quality.missingRate).toBeGreaterThan(0);
     expect(quality.confidence).toBeLessThan(baseSnapshot.confidence);
+    expect(quality.coordinateDistanceKm).toBe(2.606);
+  });
+
+  it("flags gust below sustained wind without modifying the original values", () => {
+    const anomalous = snapshot({ windSpeed: 5.33, windGust: 2.3 });
+    const quality = calculateEnvironmentalQuality(anomalous, "2026-07-12T03:00:00+09:00");
+
+    expect(anomalous.windSpeed).toBe(5.33);
+    expect(anomalous.windGust).toBe(2.3);
+    expect(quality.warnings).toContain("wind_gust_below_sustained_wind");
   });
 
   it("calculates freshness from observed or forecast issue time", () => {

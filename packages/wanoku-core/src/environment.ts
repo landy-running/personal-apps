@@ -11,6 +11,8 @@ export type DataProvenance = {
   model?: string;
   requestedAt?: string;
   completedAt?: string;
+  collectedAt?: string;
+  forecastIssuedAt?: string | null;
   status?: "ok" | "partial" | "failed";
   httpStatus?: number;
   errorCode?: "timeout" | "http_error" | "malformed_response" | "network_error" | "validation" | "unknown";
@@ -22,9 +24,11 @@ export type DataProvenance = {
 
 type BaseEnvironmentalObservation = {
   observedAt: string;
-  forecastIssuedAt?: string;
+  collectedAt: string;
+  forecastIssuedAt?: string | null;
   latitude: number;
   longitude: number;
+  coordinateDistanceKm?: number;
   source: string;
   model?: string;
   confidence: number;
@@ -103,9 +107,11 @@ export type RapidChange = {
 export type EnvironmentalFeatureVector = {
   nodeId?: string;
   observedAt: string;
+  collectedAt: string;
   forecastIssuedAt?: string;
   latitude: number;
   longitude: number;
+  coordinateDistanceKm?: number;
   windContinuity: Record<EnvironmentWindowKey, WindContinuity>;
   pressureChangeHpaPerHour?: number;
   accumulatedRain: Record<EnvironmentWindowKey, number>;
@@ -124,6 +130,9 @@ export type EnvironmentalQualityReport = {
   snapshotKey: string;
   nodeId?: string;
   observedAt: string;
+  collectedAt: string;
+  forecastIssuedAt?: string | null;
+  coordinateDistanceKm?: number | null;
   freshness: number;
   missingRate: number;
   confidence: number;
@@ -144,6 +153,7 @@ export const ENVIRONMENTAL_SCHEMA_VERSION = "wanoku-environmental-snapshot.v1";
 
 export const ENVIRONMENTAL_REQUIRED_FIELDS = [
   "observedAt",
+  "collectedAt",
   "latitude",
   "longitude",
   "windSpeed",
@@ -160,11 +170,14 @@ export const ENVIRONMENTAL_REQUIRED_FIELDS = [
 ] as const;
 
 export function environmentalSnapshotKey(snapshot: EnvironmentalSnapshot): string {
+  const vintage = snapshot.forecastIssuedAt
+    ? `issued:${snapshot.forecastIssuedAt}`
+    : `collected:${snapshot.collectedAt}`;
   return [
     snapshot.nodeId || "unknown-node",
     snapshot.source || "unknown-source",
     snapshot.observedAt,
-    snapshot.forecastIssuedAt || "analysis",
+    vintage,
     ENVIRONMENTAL_SCHEMA_VERSION
   ].join("|");
 }
@@ -187,8 +200,8 @@ export function calculateMissingRate(
   return calculateMissingFields(snapshot, fields).length / fields.length;
 }
 
-export function calculateDataFreshness(snapshot: Pick<EnvironmentalSnapshot, "observedAt" | "forecastIssuedAt">, asOf: string | Date = new Date()): number {
-  const basisMs = Math.max(parseTime(snapshot.observedAt), parseTime(snapshot.forecastIssuedAt));
+export function calculateDataFreshness(snapshot: Pick<EnvironmentalSnapshot, "observedAt" | "collectedAt" | "forecastIssuedAt">, asOf: string | Date = new Date()): number {
+  const basisMs = Math.max(parseTime(snapshot.observedAt), parseTime(snapshot.collectedAt), parseTime(snapshot.forecastIssuedAt));
   const asOfMs = typeof asOf === "string" ? Date.parse(asOf) : asOf.getTime();
   if (!Number.isFinite(basisMs) || !Number.isFinite(asOfMs)) return 0;
   const ageHours = Math.max(0, (asOfMs - basisMs) / 3600_000);
@@ -206,11 +219,17 @@ export function calculateEnvironmentalQuality(
   if (freshness < 0.35) warnings.push("stale_environmental_data");
   if (missingRate > 0.25) warnings.push("many_missing_fields");
   if (snapshot.confidence < 0.5) warnings.push("low_provider_confidence");
+  if (isFiniteNumber(snapshot.windSpeed) && isFiniteNumber(snapshot.windGust) && snapshot.windGust < snapshot.windSpeed) {
+    warnings.push("wind_gust_below_sustained_wind");
+  }
 
   return {
     snapshotKey: environmentalSnapshotKey(snapshot),
     nodeId: snapshot.nodeId,
     observedAt: snapshot.observedAt,
+    collectedAt: snapshot.collectedAt,
+    forecastIssuedAt: snapshot.forecastIssuedAt,
+    coordinateDistanceKm: snapshot.coordinateDistanceKm ?? null,
     freshness,
     missingRate,
     confidence: clamp01(snapshot.confidence * (1 - missingRate) * (0.5 + freshness / 2)),
@@ -240,7 +259,9 @@ export function buildEnvironmentalFeatureVector(
   return {
     nodeId: latest.nodeId,
     observedAt: latest.observedAt,
-    forecastIssuedAt: latest.forecastIssuedAt,
+    collectedAt: latest.collectedAt,
+    forecastIssuedAt: latest.forecastIssuedAt || undefined,
+    coordinateDistanceKm: latest.coordinateDistanceKm,
     latitude: latest.latitude,
     longitude: latest.longitude,
     windContinuity,
@@ -413,7 +434,7 @@ function maybeDirectionContradiction(out: EnvironmentalContradiction[], left: En
   }
 }
 
-function parseTime(value?: string): number {
+function parseTime(value?: string | null): number {
   return value ? Date.parse(value) : Number.NEGATIVE_INFINITY;
 }
 

@@ -13,6 +13,41 @@ const ENVIRONMENTAL_MODEL_VERSION = "wanoku-environmental-spine-v1";
 const WEATHER_PROVIDER = "open-meteo-weather";
 const MARINE_PROVIDER = "open-meteo-marine";
 const MAX_SNAPSHOTS_PER_PROVIDER = 73;
+const COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER = 1;
+const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
+const SOURCE_RUN_COLUMNS = [
+  "id",
+  "provider",
+  "node_id",
+  "requested_at",
+  "completed_at",
+  "status",
+  "http_status",
+  "error_code",
+  "model_version",
+  "raw_hash",
+  "normalized_schema_version"
+];
+const ENVIRONMENTAL_SNAPSHOT_COLUMNS = [
+  "snapshot_key",
+  "source_run_id",
+  "provider",
+  "node_id",
+  "observed_at",
+  "collected_at",
+  "forecast_issued_at",
+  "latitude",
+  "longitude",
+  "source",
+  "model",
+  "confidence",
+  "freshness",
+  "missing_fields_json",
+  "normalized_schema_version",
+  "raw_hash",
+  "normalized_json",
+  "created_at"
+];
 
 const SOURCES = [
   {
@@ -334,12 +369,16 @@ export async function fetchJsonWithTimeout(url, options = {}) {
 }
 
 export function buildOpenMeteoWeatherUrl(node) {
+  return buildOpenMeteoWeatherBatchUrl([node]);
+}
+
+export function buildOpenMeteoWeatherBatchUrl(nodes) {
   const url = new URL("https://api.open-meteo.com/v1/forecast");
-  url.searchParams.set("latitude", String(node.latitude));
-  url.searchParams.set("longitude", String(node.longitude));
+  url.searchParams.set("latitude", nodes.map((node) => String(node.latitude)).join(","));
+  url.searchParams.set("longitude", nodes.map((node) => String(node.longitude)).join(","));
   url.searchParams.set("hourly", WEATHER_HOURLY);
-  url.searchParams.set("forecast_hours", String(MAX_SNAPSHOTS_PER_PROVIDER));
-  url.searchParams.set("past_hours", "24");
+  url.searchParams.set("forecast_hours", String(COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER));
+  url.searchParams.set("past_hours", "0");
   url.searchParams.set("timezone", "Asia/Tokyo");
   url.searchParams.set("wind_speed_unit", "ms");
   url.searchParams.set("precipitation_unit", "mm");
@@ -347,12 +386,16 @@ export function buildOpenMeteoWeatherUrl(node) {
 }
 
 export function buildOpenMeteoMarineUrl(node) {
+  return buildOpenMeteoMarineBatchUrl([node]);
+}
+
+export function buildOpenMeteoMarineBatchUrl(nodes) {
   const url = new URL("https://marine-api.open-meteo.com/v1/marine");
-  url.searchParams.set("latitude", String(node.latitude));
-  url.searchParams.set("longitude", String(node.longitude));
+  url.searchParams.set("latitude", nodes.map((node) => String(node.latitude)).join(","));
+  url.searchParams.set("longitude", nodes.map((node) => String(node.longitude)).join(","));
   url.searchParams.set("hourly", MARINE_HOURLY);
-  url.searchParams.set("forecast_hours", String(MAX_SNAPSHOTS_PER_PROVIDER));
-  url.searchParams.set("past_hours", "24");
+  url.searchParams.set("forecast_hours", String(COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER));
+  url.searchParams.set("past_hours", "0");
   url.searchParams.set("timezone", "Asia/Tokyo");
   url.searchParams.set("length_unit", "metric");
   url.searchParams.set("cell_selection", "sea");
@@ -367,10 +410,19 @@ export async function fetchOpenMeteoMarine(node, options = {}) {
   return fetchJsonWithTimeout(buildOpenMeteoMarineUrl(node), options);
 }
 
+export async function fetchOpenMeteoWeatherBatch(nodes, options = {}) {
+  return fetchJsonWithTimeout(buildOpenMeteoWeatherBatchUrl(nodes), options);
+}
+
+export async function fetchOpenMeteoMarineBatch(nodes, options = {}) {
+  return fetchJsonWithTimeout(buildOpenMeteoMarineBatchUrl(nodes), options);
+}
+
 export function normalizeOpenMeteoWeather(payload, node, meta = {}) {
   assertHourlyPayload(payload, WEATHER_PROVIDER);
   const hourly = payload.hourly;
-  const issuedAt = meta.completedAt || new Date().toISOString();
+  const collectedAt = meta.collectedAt || meta.completedAt || new Date().toISOString();
+  const forecastIssuedAt = meta.forecastIssuedAt ?? null;
   const snapshots = hourly.time.slice(0, MAX_SNAPSHOTS_PER_PROVIDER).map((time, index) => {
     const pressure = asNumber(hourly.pressure_msl?.[index]);
     const previousPressure = asNumber(hourly.pressure_msl?.[index - 1]);
@@ -378,7 +430,8 @@ export function normalizeOpenMeteoWeather(payload, node, meta = {}) {
     const snapshot = compactSnapshot({
       nodeId: node.id,
       observedAt,
-      forecastIssuedAt: issuedAt,
+      collectedAt,
+      forecastIssuedAt,
       latitude: asNumber(payload.latitude) ?? node.latitude,
       longitude: asNumber(payload.longitude) ?? node.longitude,
       windSpeed: asNumber(hourly.wind_speed_10m?.[index]),
@@ -390,10 +443,9 @@ export function normalizeOpenMeteoWeather(payload, node, meta = {}) {
       accumulatedRain: sumPrevious(hourly.precipitation, index, 24),
       airTemperature: asNumber(hourly.temperature_2m?.[index]),
       source: WEATHER_PROVIDER,
-      model: payload.timezone_abbreviation || "open-meteo-best-match",
       confidence: 0.82,
-      freshness: freshness(observedAt, issuedAt),
-      provenance: provenance(WEATHER_PROVIDER, buildOpenMeteoWeatherUrl(node), meta)
+      freshness: freshness(observedAt, collectedAt),
+      provenance: provenance(WEATHER_PROVIDER, meta.source || buildOpenMeteoWeatherUrl(node), meta)
     });
     snapshot.missingFields = missingFields(snapshot, ["windSpeed", "windDirection", "pressure", "precipitation", "airTemperature"]);
     snapshot.confidence = confidenceFromMissing(0.82, snapshot.missingFields.length, 5);
@@ -405,13 +457,15 @@ export function normalizeOpenMeteoWeather(payload, node, meta = {}) {
 export function normalizeOpenMeteoMarine(payload, node, meta = {}) {
   assertHourlyPayload(payload, MARINE_PROVIDER);
   const hourly = payload.hourly;
-  const issuedAt = meta.completedAt || new Date().toISOString();
+  const collectedAt = meta.collectedAt || meta.completedAt || new Date().toISOString();
+  const forecastIssuedAt = meta.forecastIssuedAt ?? null;
   const snapshots = hourly.time.slice(0, MAX_SNAPSHOTS_PER_PROVIDER).map((time, index) => {
     const observedAt = normalizeTime(time);
     const snapshot = compactSnapshot({
       nodeId: node.id,
       observedAt,
-      forecastIssuedAt: issuedAt,
+      collectedAt,
+      forecastIssuedAt,
       latitude: asNumber(payload.latitude) ?? node.latitude,
       longitude: asNumber(payload.longitude) ?? node.longitude,
       waveHeight: asNumber(hourly.wave_height?.[index]),
@@ -428,10 +482,9 @@ export function normalizeOpenMeteoMarine(payload, node, meta = {}) {
       oceanCurrentDirection: asNumber(hourly.ocean_current_direction?.[index]),
       seaLevelHeightMsl: asNumber(hourly.sea_level_height_msl?.[index]),
       source: MARINE_PROVIDER,
-      model: payload.timezone_abbreviation || "open-meteo-marine-best-match",
       confidence: 0.78,
-      freshness: freshness(observedAt, issuedAt),
-      provenance: provenance(MARINE_PROVIDER, buildOpenMeteoMarineUrl(node), meta)
+      freshness: freshness(observedAt, collectedAt),
+      provenance: provenance(MARINE_PROVIDER, meta.source || buildOpenMeteoMarineUrl(node), meta)
     });
     snapshot.missingFields = missingFields(snapshot, [
       "waveHeight",
@@ -445,6 +498,91 @@ export function normalizeOpenMeteoMarine(payload, node, meta = {}) {
     return snapshot;
   });
   return snapshots;
+}
+
+export function normalizeOpenMeteoWeatherBatch(payload, nodes, meta = {}) {
+  return normalizeOpenMeteoBatch(payload, nodes, WEATHER_PROVIDER, normalizeOpenMeteoWeather, meta);
+}
+
+export function normalizeOpenMeteoMarineBatch(payload, nodes, meta = {}) {
+  return normalizeOpenMeteoBatch(payload, nodes, MARINE_PROVIDER, normalizeOpenMeteoMarine, meta);
+}
+
+function normalizeOpenMeteoBatch(payload, nodes, provider, normalizeOne, meta) {
+  const responses = Array.isArray(payload) ? payload : [payload];
+  const matches = matchOpenMeteoResponsesToNodes(responses, nodes);
+
+  return matches.map((match) => {
+    if (!match.response) {
+      return {
+        nodeId: match.node.id,
+        provider,
+        status: "failed",
+        errorCode: "malformed_response",
+        message: "provider response missing for requested node",
+        coordinateDistanceKm: null,
+        snapshots: []
+      };
+    }
+    try {
+      const coordinateDistance = Number.isFinite(match.distanceKm) ? round(match.distanceKm, 3) : undefined;
+      return {
+        nodeId: match.node.id,
+        provider,
+        status: "ok",
+        coordinateDistanceKm: match.distanceKm,
+        snapshots: normalizeOne(match.response, match.node, meta).map((snapshot) => compactSnapshot({
+          ...snapshot,
+          coordinateDistanceKm: coordinateDistance
+        }))
+      };
+    } catch (error) {
+      const classified = classifyProviderError(error);
+      return {
+        nodeId: match.node.id,
+        provider,
+        status: "failed",
+        errorCode: classified.errorCode,
+        message: classified.message,
+        coordinateDistanceKm: match.distanceKm,
+        snapshots: []
+      };
+    }
+  });
+}
+
+export function matchOpenMeteoResponsesToNodes(responses, nodes) {
+  const unused = responses.map((response, index) => ({ response, index }));
+  return nodes.map((node, nodeIndex) => {
+    const byLocationIdIndex = unused.findIndex(({ response }) => {
+      const locationId = Number.parseInt(String(response?.location_id ?? ""), 10);
+      return Number.isInteger(locationId) && locationId === nodeIndex;
+    });
+    if (byLocationIdIndex >= 0) {
+      const [hit] = unused.splice(byLocationIdIndex, 1);
+      const distanceKm = coordinateDistanceKm(node, hit.response);
+      return distanceKm <= 50
+        ? { node, response: hit.response, responseIndex: hit.index, distanceKm }
+        : { node, response: null, responseIndex: hit.index, distanceKm };
+    }
+
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < unused.length; i++) {
+      const distance = coordinateDistanceKm(node, unused[i].response);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex >= 0 && bestDistance <= 50) {
+      const [hit] = unused.splice(bestIndex, 1);
+      return { node, response: hit.response, responseIndex: hit.index, distanceKm: bestDistance };
+    }
+
+    return { node, response: null, responseIndex: null, distanceKm: Number.isFinite(bestDistance) ? bestDistance : null };
+  });
 }
 
 function assertHourlyPayload(payload, provider) {
@@ -464,6 +602,8 @@ function provenance(provider, source, meta) {
       model: meta.model,
       requestedAt: meta.requestedAt,
       completedAt: meta.completedAt,
+      collectedAt: meta.collectedAt || meta.completedAt,
+      forecastIssuedAt: meta.forecastIssuedAt ?? null,
       status: meta.status || "ok",
       httpStatus: meta.httpStatus,
       errorCode: meta.errorCode,
@@ -478,66 +618,142 @@ function provenance(provider, source, meta) {
 const ENVIRONMENT_PROVIDERS = [
   {
     id: WEATHER_PROVIDER,
-    fetch: fetchOpenMeteoWeather,
-    normalize: normalizeOpenMeteoWeather
+    shortName: "weather",
+    fetchBatch: fetchOpenMeteoWeatherBatch,
+    normalizeBatch: normalizeOpenMeteoWeatherBatch,
+    batchUrl: buildOpenMeteoWeatherBatchUrl
   },
   {
     id: MARINE_PROVIDER,
-    fetch: fetchOpenMeteoMarine,
-    normalize: normalizeOpenMeteoMarine
+    shortName: "marine",
+    fetchBatch: fetchOpenMeteoMarineBatch,
+    normalizeBatch: normalizeOpenMeteoMarineBatch,
+    batchUrl: buildOpenMeteoMarineBatchUrl
   }
 ];
 
-async function collectEnvironment(env, options = {}) {
+export async function safeCollectEnvironment(env, options = {}) {
+  try {
+    return { ok: true, ...(await collectEnvironment(env, options)) };
+  } catch (error) {
+    console.error("environment_collection_failed", {
+      errorCode: error?.errorCode || "unknown",
+      message: error?.message || "Environmental collection failed."
+    });
+    return {
+      ok: false,
+      error: "environment_collection_failed",
+      message: "Environmental collection failed.",
+      summary: {
+        weather: options.provider === "marine" ? "not_requested" : "unknown",
+        marine: options.provider === "weather" ? "not_requested" : "unknown"
+      }
+    };
+  }
+}
+
+export async function collectEnvironment(env, options = {}) {
+  const startedAt = Date.now();
   const requestedAt = options.requestedAt || new Date().toISOString();
   const db = hasD1(env) ? env.WANOKU_INTEL_D1 : null;
   const fetchOptions = { fetchImpl: options.fetchImpl || fetch, timeoutMs: options.timeoutMs ?? 8_000, retries: options.retries ?? 1 };
+  const nodes = selectEnvironmentNodes(options.nodeId);
+  const providers = selectEnvironmentProviders(options.provider);
   const results = [];
-  let savedSnapshots = 0;
-  let failedProviders = 0;
+  const sourceRuns = [];
+  const snapshotRows = [];
+  const metrics = {
+    nodeCount: nodes.length,
+    providerCount: providers.length,
+    externalFetchCount: 0,
+    d1StatementCount: 0,
+    snapshotCount: 0,
+    insertedCount: 0,
+    duplicateCount: 0,
+    failureCount: 0,
+    durationMs: 0
+  };
 
-  for (const node of TOKYO_BAY_ENVIRONMENT_NODES) {
-    for (const provider of ENVIRONMENT_PROVIDERS) {
-      const sourceRunId = `${provider.id}:${node.id}:${requestedAt}`;
-      const run = {
-        id: sourceRunId,
-        provider: provider.id,
+  if (!nodes.length || !providers.length) {
+    metrics.durationMs = Date.now() - startedAt;
+    return {
+      requestedAt,
+      completedAt: new Date().toISOString(),
+      dbConfigured: Boolean(db),
+      ...metrics,
+      estimatedSubrequestCount: 0,
+      results
+    };
+  }
+
+  for (const provider of providers) {
+    const providerSource = provider.batchUrl(nodes);
+    try {
+      metrics.externalFetchCount += 1;
+      const payload = await provider.fetchBatch(nodes, fetchOptions);
+      const completedAt = options.collectedAt || new Date().toISOString();
+      const rawHash = await sha256Hex(JSON.stringify(payload));
+      const normalized = provider.normalizeBatch(payload, nodes, {
         requestedAt,
-        completedAt: new Date().toISOString(),
+        completedAt,
+        collectedAt: completedAt,
+        forecastIssuedAt: null,
+        rawHash,
         status: "ok",
-        httpStatus: null,
-        errorCode: null,
-        modelVersion: ENVIRONMENTAL_MODEL_VERSION,
-        rawHash: null,
-        normalizedSchemaVersion: ENVIRONMENTAL_SCHEMA_VERSION
-      };
+        source: providerSource
+      });
 
-      try {
-        const payload = await provider.fetch(node, fetchOptions);
-        run.completedAt = new Date().toISOString();
-        run.rawHash = await sha256Hex(JSON.stringify(payload));
-        const snapshots = provider.normalize(payload, node, {
-          requestedAt: run.requestedAt,
-          completedAt: run.completedAt,
-          rawHash: run.rawHash,
-          status: "ok"
+      for (const nodeResult of normalized) {
+        const sourceRun = makeSourceRun({
+          provider: provider.id,
+          nodeId: nodeResult.nodeId,
+          requestedAt,
+          completedAt,
+          status: nodeResult.status === "ok" ? "ok" : "failed",
+          errorCode: nodeResult.status === "ok" ? null : nodeResult.errorCode,
+          rawHash
         });
-        if (db) {
-          await insertSourceRun(db, run);
-          for (const snapshot of snapshots) {
-            const inserted = await insertEnvironmentalSnapshot(db, sourceRunId, provider.id, run.rawHash, snapshot);
-            if (inserted) savedSnapshots += 1;
-          }
+        sourceRuns.push(sourceRun);
+
+        if (nodeResult.status !== "ok") {
+          metrics.failureCount += 1;
+          results.push({
+            nodeId: nodeResult.nodeId,
+            provider: provider.id,
+            status: "failed",
+            errorCode: nodeResult.errorCode,
+            message: nodeResult.message
+          });
+          continue;
         }
-        results.push({ nodeId: node.id, provider: provider.id, status: "ok", snapshotCount: snapshots.length });
-      } catch (error) {
-        const classified = classifyProviderError(error);
-        failedProviders += 1;
-        run.completedAt = new Date().toISOString();
-        run.status = "failed";
-        run.httpStatus = classified.httpStatus ?? null;
-        run.errorCode = classified.errorCode;
-        if (db) await insertSourceRun(db, run);
+
+        const snapshots = selectCollectionSnapshots(nodeResult.snapshots);
+        metrics.snapshotCount += snapshots.length;
+        for (const snapshot of snapshots) {
+          snapshotRows.push({ sourceRunId: sourceRun.id, provider: provider.id, rawHash, snapshot });
+        }
+        results.push({
+          nodeId: nodeResult.nodeId,
+          provider: provider.id,
+          status: "ok",
+          snapshotCount: snapshots.length,
+          coordinateDistanceKm: nodeResult.coordinateDistanceKm
+        });
+      }
+    } catch (error) {
+      const classified = classifyProviderError(error);
+      metrics.failureCount += nodes.length;
+      for (const node of nodes) {
+        sourceRuns.push(makeSourceRun({
+          provider: provider.id,
+          nodeId: node.id,
+          requestedAt,
+          completedAt: new Date().toISOString(),
+          status: "failed",
+          httpStatus: classified.httpStatus ?? null,
+          errorCode: classified.errorCode,
+          rawHash: null
+        }));
         results.push({
           nodeId: node.id,
           provider: provider.id,
@@ -549,66 +765,131 @@ async function collectEnvironment(env, options = {}) {
     }
   }
 
+  if (db) {
+    const writeStats = await writeEnvironmentBatch(db, sourceRuns, snapshotRows);
+    metrics.d1StatementCount += writeStats.statementCount;
+    metrics.insertedCount += writeStats.insertedCount;
+    metrics.duplicateCount += writeStats.duplicateCount;
+  }
+
+  metrics.durationMs = Date.now() - startedAt;
+
   return {
     requestedAt,
     completedAt: new Date().toISOString(),
     dbConfigured: Boolean(db),
-    nodeCount: TOKYO_BAY_ENVIRONMENT_NODES.length,
-    providerCount: ENVIRONMENT_PROVIDERS.length,
-    savedSnapshots,
-    failedProviders,
+    ...metrics,
+    estimatedSubrequestCount: metrics.externalFetchCount + metrics.d1StatementCount,
     results
   };
 }
 
-async function insertSourceRun(db, run) {
-  await db.prepare(`
-    INSERT OR REPLACE INTO source_runs
-      (id, provider, requested_at, completed_at, status, http_status, error_code, model_version, raw_hash, normalized_schema_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    run.id,
-    run.provider,
-    run.requestedAt,
-    run.completedAt,
-    run.status,
-    run.httpStatus,
-    run.errorCode,
-    run.modelVersion,
-    run.rawHash,
-    run.normalizedSchemaVersion
-  ).run();
+function makeSourceRun({ provider, nodeId, requestedAt, completedAt, status, httpStatus = null, errorCode = null, rawHash = null }) {
+  return {
+    id: `${provider}:${nodeId}:${requestedAt}`,
+    provider,
+    nodeId,
+    requestedAt,
+    completedAt,
+    status,
+    httpStatus,
+    errorCode,
+    modelVersion: ENVIRONMENTAL_MODEL_VERSION,
+    rawHash,
+    normalizedSchemaVersion: ENVIRONMENTAL_SCHEMA_VERSION
+  };
 }
 
-async function insertEnvironmentalSnapshot(db, sourceRunId, provider, rawHash, snapshot) {
-  const result = await db.prepare(`
-    INSERT OR IGNORE INTO environmental_snapshots
-      (
-        snapshot_key, source_run_id, provider, node_id, observed_at, forecast_issued_at,
-        latitude, longitude, source, model, confidence, freshness, missing_fields_json,
-        normalized_schema_version, raw_hash, normalized_json, created_at
-      )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    environmentalSnapshotKey(snapshot),
-    sourceRunId,
-    provider,
-    snapshot.nodeId,
-    snapshot.observedAt,
-    snapshot.forecastIssuedAt,
-    snapshot.latitude,
-    snapshot.longitude,
-    snapshot.source,
-    snapshot.model,
-    snapshot.confidence,
-    snapshot.freshness,
-    JSON.stringify(snapshot.missingFields || []),
-    ENVIRONMENTAL_SCHEMA_VERSION,
-    rawHash,
-    JSON.stringify(snapshot),
-    new Date().toISOString()
-  ).run();
-  return Number(result?.meta?.changes || 0) > 0;
+function selectEnvironmentNodes(nodeId) {
+  if (!nodeId) return TOKYO_BAY_ENVIRONMENT_NODES;
+  return TOKYO_BAY_ENVIRONMENT_NODES.filter((node) => node.id === nodeId);
+}
+
+function selectEnvironmentProviders(provider) {
+  if (!provider) return ENVIRONMENT_PROVIDERS;
+  const normalized = String(provider).trim().toLowerCase();
+  return ENVIRONMENT_PROVIDERS.filter((item) => item.shortName === normalized || item.id === normalized);
+}
+
+function selectCollectionSnapshots(snapshots) {
+  return snapshots
+    .slice()
+    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
+    .slice(0, COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER);
+}
+
+export function chunkRowsForBoundLimit(rows, columnsPerRow, maxParams = D1_MAX_BOUND_PARAMS_PER_STATEMENT) {
+  const rowsPerChunk = Math.max(1, Math.floor(maxParams / columnsPerRow));
+  const chunks = [];
+  for (let index = 0; index < rows.length; index += rowsPerChunk) {
+    chunks.push(rows.slice(index, index + rowsPerChunk));
+  }
+  return chunks;
+}
+
+async function writeEnvironmentBatch(db, sourceRuns, snapshotRows) {
+  let statementCount = 0;
+  let insertedCount = 0;
+  let duplicateCount = 0;
+
+  for (const chunk of chunkRowsForBoundLimit(sourceRuns, SOURCE_RUN_COLUMNS.length)) {
+    const sql = multiRowInsertSql("source_runs", SOURCE_RUN_COLUMNS, chunk.length, "OR REPLACE");
+    const params = chunk.flatMap((run) => [
+      run.id,
+      run.provider,
+      run.nodeId,
+      run.requestedAt,
+      run.completedAt,
+      run.status,
+      run.httpStatus,
+      run.errorCode,
+      run.modelVersion,
+      run.rawHash,
+      run.normalizedSchemaVersion
+    ]);
+    await db.prepare(sql).bind(...params).run();
+    statementCount += 1;
+  }
+
+  for (const chunk of chunkRowsForBoundLimit(snapshotRows, ENVIRONMENTAL_SNAPSHOT_COLUMNS.length)) {
+    const sql = multiRowInsertSql("environmental_snapshots", ENVIRONMENTAL_SNAPSHOT_COLUMNS, chunk.length, "OR IGNORE");
+    const params = chunk.flatMap(({ sourceRunId, provider, rawHash, snapshot }) => [
+      environmentalSnapshotKey(snapshot),
+      sourceRunId,
+      provider,
+      snapshot.nodeId,
+      snapshot.observedAt,
+      snapshot.collectedAt,
+      snapshot.forecastIssuedAt,
+      snapshot.latitude,
+      snapshot.longitude,
+      snapshot.source,
+      snapshot.model ?? null,
+      snapshot.confidence,
+      snapshot.freshness,
+      JSON.stringify(snapshot.missingFields || []),
+      ENVIRONMENTAL_SCHEMA_VERSION,
+      rawHash,
+      JSON.stringify(snapshot),
+      new Date().toISOString()
+    ]);
+    const result = await db.prepare(sql).bind(...params).run();
+    const changes = Number(result?.meta?.changes || 0);
+    insertedCount += changes;
+    duplicateCount += Math.max(0, chunk.length - changes);
+    statementCount += 1;
+  }
+
+  return { statementCount, insertedCount, duplicateCount };
+}
+
+function multiRowInsertSql(table, columns, rowCount, insertModifier) {
+  const row = `(${columns.map(() => "?").join(", ")})`;
+  return `
+    INSERT ${insertModifier} INTO ${table}
+      (${columns.join(", ")})
+    VALUES ${Array.from({ length: rowCount }, () => row).join(", ")}
+  `;
 }
 
 async function readCurrentEnvironment(env, url) {
@@ -625,14 +906,15 @@ async function readCurrentEnvironment(env, url) {
     binds.push(nodeId);
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const queryLimit = Math.max(limit * 5, TOKYO_BAY_ENVIRONMENT_NODES.length * ENVIRONMENT_PROVIDERS.length * 5);
   const rows = await env.WANOKU_INTEL_D1.prepare(`
-    SELECT normalized_json
+    SELECT snapshot_key, normalized_json, collected_at, forecast_issued_at, created_at
     FROM environmental_snapshots
     ${where}
-    ORDER BY observed_at DESC, created_at DESC
+    ORDER BY COALESCE(collected_at, forecast_issued_at, created_at) DESC, observed_at DESC, created_at DESC
     LIMIT ?
-  `).bind(...binds, limit).all();
-  return { snapshots: rowsToSnapshots(rows), source: "d1", dbConfigured: true };
+  `).bind(...binds, queryLimit).all();
+  return { snapshots: pickLatestVintagePerNodeProvider(rowsToSnapshots(rows)).slice(0, limit), source: "d1", dbConfigured: true };
 }
 
 async function readEnvironmentHistory(env, url) {
@@ -640,6 +922,9 @@ async function readEnvironmentHistory(env, url) {
   const limit = clampInt(url.searchParams.get("limit"), 1, 500, 200);
   const start = url.searchParams.get("start");
   const end = url.searchParams.get("end");
+  const collectedStart = url.searchParams.get("collectedStart") || url.searchParams.get("collected_start");
+  const collectedEnd = url.searchParams.get("collectedEnd") || url.searchParams.get("collected_end");
+  const orderBy = url.searchParams.get("orderBy") === "collectedAt" ? "collectedAt" : "observedAt";
   if (!hasD1(env)) {
     return { snapshots: fixtureEnvironmentSnapshots(nodeId).slice(0, limit), source: "fixture", dbConfigured: false };
   }
@@ -658,12 +943,23 @@ async function readEnvironmentHistory(env, url) {
     filters.push("observed_at <= ?");
     binds.push(end);
   }
+  if (collectedStart) {
+    filters.push("COALESCE(collected_at, forecast_issued_at, created_at) >= ?");
+    binds.push(collectedStart);
+  }
+  if (collectedEnd) {
+    filters.push("COALESCE(collected_at, forecast_issued_at, created_at) <= ?");
+    binds.push(collectedEnd);
+  }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const orderSql = orderBy === "collectedAt"
+    ? "COALESCE(collected_at, forecast_issued_at, created_at) DESC, observed_at DESC, created_at DESC"
+    : "observed_at DESC, COALESCE(collected_at, forecast_issued_at, created_at) DESC, created_at DESC";
   const rows = await env.WANOKU_INTEL_D1.prepare(`
-    SELECT normalized_json
+    SELECT snapshot_key, normalized_json, collected_at, forecast_issued_at, created_at
     FROM environmental_snapshots
     ${where}
-    ORDER BY observed_at DESC, created_at DESC
+    ORDER BY ${orderSql}
     LIMIT ?
   `).bind(...binds, limit).all();
   return { snapshots: rowsToSnapshots(rows), source: "d1", dbConfigured: true };
@@ -677,10 +973,38 @@ async function readEnvironmentQuality(env, url) {
   };
 }
 
-function rowsToSnapshots(rows) {
+export function rowsToSnapshots(rows) {
   return (rows?.results || [])
-    .map((row) => safeJson(row.normalized_json))
+    .map((row) => hydrateEnvironmentalSnapshotRow(row))
     .filter(Boolean);
+}
+
+export function hydrateEnvironmentalSnapshotRow(row) {
+  const snapshot = safeJson(row.normalized_json);
+  if (!snapshot) return null;
+  const hasForecastIssuedAt = Object.prototype.hasOwnProperty.call(row, "forecast_issued_at");
+  return sanitizeOpenMeteoModel({
+    ...snapshot,
+    snapshotKey: row.snapshot_key || snapshot.snapshotKey,
+    collectedAt: snapshot.collectedAt || row.collected_at || row.forecast_issued_at || row.created_at,
+    forecastIssuedAt: hasForecastIssuedAt ? row.forecast_issued_at : (snapshot.forecastIssuedAt ?? null)
+  });
+}
+
+export function pickLatestVintagePerNodeProvider(snapshots) {
+  const byKey = new Map();
+  for (const snapshot of snapshots) {
+    const key = `${snapshot.nodeId || "unknown-node"}|${snapshot.source || snapshot.provider || "unknown-provider"}`;
+    const previous = byKey.get(key);
+    if (!previous || vintageTimeMs(snapshot) > vintageTimeMs(previous)) {
+      byKey.set(key, snapshot);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => vintageTimeMs(b) - vintageTimeMs(a));
+}
+
+function vintageTimeMs(snapshot) {
+  return Date.parse(snapshot.collectedAt || snapshot.forecastIssuedAt || snapshot.observedAt || "");
 }
 
 function fixtureEnvironmentSnapshots(nodeId) {
@@ -691,7 +1015,8 @@ function fixtureEnvironmentSnapshots(nodeId) {
     compactSnapshot({
       nodeId: node.id,
       observedAt: "2026-07-12T00:00:00+09:00",
-      forecastIssuedAt: "2026-07-11T18:00:00+09:00",
+      collectedAt: "2026-07-11T18:00:00+09:00",
+      forecastIssuedAt: null,
       latitude: node.latitude,
       longitude: node.longitude,
       windSpeed: 4 + index,
@@ -707,12 +1032,13 @@ function fixtureEnvironmentSnapshots(nodeId) {
       confidence: 0.78,
       freshness: 0.8,
       missingFields: [],
-      provenance: provenance(WEATHER_PROVIDER, "fixture", { completedAt: "2026-07-11T18:00:00+09:00", status: "ok" })
+      provenance: provenance(WEATHER_PROVIDER, "fixture", { completedAt: "2026-07-11T18:00:00+09:00", collectedAt: "2026-07-11T18:00:00+09:00", forecastIssuedAt: null, status: "ok" })
     }),
     compactSnapshot({
       nodeId: node.id,
       observedAt: "2026-07-12T00:00:00+09:00",
-      forecastIssuedAt: "2026-07-11T18:00:00+09:00",
+      collectedAt: "2026-07-11T18:00:00+09:00",
+      forecastIssuedAt: null,
       latitude: node.latitude,
       longitude: node.longitude,
       waveHeight: 0.4 + index * 0.1,
@@ -730,7 +1056,7 @@ function fixtureEnvironmentSnapshots(nodeId) {
       confidence: 0.72,
       freshness: 0.8,
       missingFields: [],
-      provenance: provenance(MARINE_PROVIDER, "fixture", { completedAt: "2026-07-11T18:00:00+09:00", status: "ok" })
+      provenance: provenance(MARINE_PROVIDER, "fixture", { completedAt: "2026-07-11T18:00:00+09:00", collectedAt: "2026-07-11T18:00:00+09:00", forecastIssuedAt: null, status: "ok" })
     })
   ]);
 }
@@ -747,9 +1073,12 @@ function qualityReport(snapshot) {
   const freshnessValue = Math.min(asNumber(snapshot.freshness) ?? 0, freshness(snapshot.observedAt, new Date().toISOString()));
   const missingRate = missing.length / 14;
   return {
-    snapshotKey: environmentalSnapshotKey(snapshot),
+    snapshotKey: snapshot.snapshotKey || environmentalSnapshotKey(snapshot),
     nodeId: snapshot.nodeId,
     observedAt: snapshot.observedAt,
+    collectedAt: snapshot.collectedAt,
+    forecastIssuedAt: snapshot.forecastIssuedAt ?? null,
+    coordinateDistanceKm: asNumber(snapshot.coordinateDistanceKm) ?? null,
     source: snapshot.source,
     freshness: freshnessValue,
     missingRate,
@@ -758,17 +1087,53 @@ function qualityReport(snapshot) {
     stale: freshnessValue < 0.35,
     warnings: [
       ...(freshnessValue < 0.35 ? ["stale_environmental_data"] : []),
-      ...(missingRate > 0.25 ? ["many_missing_fields"] : [])
+      ...(missingRate > 0.25 ? ["many_missing_fields"] : []),
+      ...(hasWindGustBelowSustainedWind(snapshot) ? ["wind_gust_below_sustained_wind"] : [])
     ]
   };
 }
 
+function sanitizeOpenMeteoModel(snapshot) {
+  if (!isOpenMeteoSource(snapshot.source) || !isOpenMeteoNonModelValue(snapshot.model)) {
+    return snapshot;
+  }
+  const { model, ...rest } = snapshot;
+  return rest;
+}
+
+function isOpenMeteoSource(source) {
+  return source === WEATHER_PROVIDER || source === MARINE_PROVIDER;
+}
+
+function isOpenMeteoNonModelValue(model) {
+  if (typeof model !== "string") return false;
+  const value = model.trim().toLowerCase();
+  return [
+    "gmt+9",
+    "gmt+09:00",
+    "utc+9",
+    "utc+09:00",
+    "jst",
+    "open-meteo-best-match",
+    "open-meteo-marine-best-match"
+  ].includes(value);
+}
+
+function hasWindGustBelowSustainedWind(snapshot) {
+  const windSpeed = asNumber(snapshot.windSpeed);
+  const windGust = asNumber(snapshot.windGust);
+  return windSpeed != null && windGust != null && windGust < windSpeed;
+}
+
 function environmentalSnapshotKey(snapshot) {
+  const vintage = snapshot.forecastIssuedAt
+    ? `issued:${snapshot.forecastIssuedAt}`
+    : `collected:${snapshot.collectedAt || "unknown"}`;
   return [
     snapshot.nodeId || "unknown-node",
     snapshot.source || "unknown-source",
     snapshot.observedAt,
-    snapshot.forecastIssuedAt || "analysis",
+    vintage,
     ENVIRONMENTAL_SCHEMA_VERSION
   ].join("|");
 }
@@ -824,6 +1189,19 @@ function asNumber(value) {
 
 function normalizeDegrees(degrees) {
   return ((degrees % 360) + 360) % 360;
+}
+
+function coordinateDistanceKm(node, response) {
+  const lat = asNumber(response?.latitude);
+  const lon = asNumber(response?.longitude);
+  if (lat == null || lon == null) return Number.POSITIVE_INFINITY;
+  const toRad = (degrees) => degrees * Math.PI / 180;
+  const earthKm = 6371;
+  const dLat = toRad(lat - node.latitude);
+  const dLon = toRad(lon - node.longitude);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(node.latitude)) * Math.cos(toRad(lat)) * Math.sin(dLon / 2) ** 2;
+  return earthKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function clampInt(value, min, max, fallback) {
@@ -885,8 +1263,11 @@ async function handleRequest(request, env) {
   if (request.method === "POST" && url.pathname === "/admin/collect-environment") {
     const auth = isAdminAuthorized(request, env);
     if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
-    const result = await collectEnvironment(env);
-    return json(request, env, result);
+    const result = await safeCollectEnvironment(env, {
+      provider: url.searchParams.get("provider") || undefined,
+      nodeId: url.searchParams.get("node_id") || url.searchParams.get("nodeId") || undefined
+    });
+    return json(request, env, result, { status: result.ok ? 200 : 500 });
   }
 
   if (request.method !== "GET") {
@@ -955,12 +1336,32 @@ async function handleRequest(request, env) {
 
 export default {
   async fetch(request, env) {
-    return handleRequest(request, env || {});
+    try {
+      return await handleRequest(request, env || {});
+    } catch (error) {
+      console.error("worker_request_failed", {
+        message: error?.message || "Request failed."
+      });
+      return json(request, env || {}, {
+        ok: false,
+        error: "worker_request_failed",
+        message: "Request failed."
+      }, { status: 500 });
+    }
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(collectEnvironment(env || {}, {
-      requestedAt: new Date(event.scheduledTime || Date.now()).toISOString()
-    }));
+    ctx.waitUntil(
+      safeCollectEnvironment(env || {}, {
+        requestedAt: new Date(event.scheduledTime || Date.now()).toISOString()
+      }).then((result) => {
+        if (!result.ok) {
+          console.error("environment_scheduled_collection_failed", {
+            error: result.error,
+            message: result.message
+          });
+        }
+      })
+    );
   }
 };
