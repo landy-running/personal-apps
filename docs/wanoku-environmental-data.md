@@ -150,6 +150,31 @@ Environmental Spine v1 endpoint:
 
 admin secretはCloudflare secretとして設定し、クライアントやrepoには置きません。
 
+## 読み取り専用監査
+
+Wanoku Environmental Spineの本番状態は、監査スクリプトで読み取り専用確認できます。Workerの公開APIとD1の `SELECT` だけを使い、admin secretは要求しません。
+
+通常出力:
+
+```powershell
+.\scripts\wanoku-audit-environment.ps1
+```
+
+JSON出力:
+
+```powershell
+.\scripts\wanoku-audit-environment.ps1 -Json
+```
+
+終了コード:
+
+- `0`: `HEALTHY`
+- `1`: `DEGRADED`
+- `2`: `FAILED`
+- `3`: 監査ツール自体の設定・実行エラー
+
+テストやオフライン確認では `--fixture-dir` / `-FixtureDir` で `health.json`, `current.json`, `quality.json`, `d1.json` を読み込めます。
+
 ## Deploy / D1 / Cron 手順
 
 1. D1 databaseを作成する。
