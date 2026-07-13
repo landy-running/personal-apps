@@ -3,6 +3,7 @@ import {
   calculateGraphSummary,
   validateHabitatGraph
 } from "../../../packages/wanoku-core/src/habitat.ts";
+import { buildEnvironmentalFeatureSet } from "../../../packages/wanoku-core/src/environment-features.ts";
 import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
 import { TOKYO_BAY_ENVIRONMENT_NODES } from "./environment-nodes.js";
 
@@ -79,5 +80,35 @@ describe("Wanoku habitat graph fixture from environmental nodes", () => {
       expect(edge.notes.join(" ")).toContain("Distance is calculated from environment-node coordinates");
       expect(edge.notes.join(" ")).toContain("Hydrological connectivity, migration validity");
     }
+  });
+
+  it("can build one environmental feature vector per initial habitat node with exact nodeId matching", () => {
+    const graph = createInitialHabitatGraph(TOKYO_BAY_ENVIRONMENT_NODES, "2026-07-13T00:00:00.000Z");
+    const snapshots = TOKYO_BAY_ENVIRONMENT_NODES.map((node, index) => ({
+      nodeId: node.id,
+      observedAt: "2026-07-13T00:00:00.000Z",
+      collectedAt: "2026-07-13T00:05:00.000Z",
+      forecastIssuedAt: null,
+      latitude: node.latitude,
+      longitude: node.longitude,
+      source: index % 2 === 0 ? "open-meteo-weather" : "open-meteo-marine",
+      confidence: 0.8,
+      freshness: 0.9,
+      missingFields: [],
+      airTemperature: 25 + index,
+      windSpeed: 3 + index / 10
+    }));
+
+    const result = buildEnvironmentalFeatureSet({
+      habitatGraph: graph,
+      snapshots,
+      calculatedAt: "2026-07-13T01:00:00.000Z"
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.unmatchedSnapshotNodeIds).toEqual([]);
+    expect(result.nodesWithoutSnapshots).toEqual([]);
+    expect(result.features).toHaveLength(TOKYO_BAY_ENVIRONMENT_NODES.length);
+    expect(new Set(result.features.map((feature) => feature.nodeId))).toEqual(new Set(TOKYO_BAY_ENVIRONMENT_NODES.map((node) => node.id)));
   });
 });

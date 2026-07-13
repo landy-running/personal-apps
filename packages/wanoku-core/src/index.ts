@@ -31,6 +31,38 @@ export {
   type WindContinuity
 } from "./environment";
 export {
+  FEATURE_WINDOW_KEYS,
+  NODE_ENVIRONMENTAL_FEATURE_SCHEMA_VERSION,
+  buildEnvironmentalFeatureSet,
+  buildNodeEnvironmentalFeatures,
+  calculateCircularMeanDegrees,
+  calculateDirectionalAlignment,
+  circularDifferenceDegrees,
+  findHabitatNodesWithoutSnapshots,
+  findSnapshotsWithoutHabitatNode,
+  mapSnapshotsToHabitatNodes,
+  normalizeDirectionDegrees,
+  validateNodeEnvironmentalFeatures,
+  vectorFromSpeedAndDirection,
+  type BuildEnvironmentalFeatureSetInput,
+  type BuildEnvironmentalFeatureSetResult,
+  type BuildNodeEnvironmentalFeaturesInput,
+  type DirectionConvention,
+  type DirectionConventionSet,
+  type EnvironmentalFeatureProvenance,
+  type FeatureValidationResult,
+  type FeatureWindowKey,
+  type MissingReason,
+  type NodeEnvironmentalDataQuality,
+  type NodeEnvironmentalFeatures,
+  type NodeEnvironmentalWindows,
+  type ProviderNodeEnvironmentalWindows,
+  type ProviderQualitySummary,
+  type SnapshotHabitatNodeMapping,
+  type WindowFeatures,
+  type WindowMetricField
+} from "./environment-features";
+export {
   calculateGraphSummary,
   findShortestPathByDistance,
   getAdjacentNodes,
