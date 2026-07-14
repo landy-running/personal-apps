@@ -139,3 +139,7 @@ Mapping diagnostics are intentionally separated:
 - `conflicting-mapping`: same provider/station/node pair has multiple different active mappings at `targetAt`; the bridge excludes that pair instead of choosing one.
 - `multiple-active-stations`: different provider/station keys are active for the same node; the bridge does not average or choose by distance.
 - exact duplicate mappings are deduped with a warning and can still produce features.
+
+## Persistence note
+
+Hydro-Coastal Persistence Spine v1 adds a provider-neutral D1 repository for storing and reading normalized `HydroCoastalObservation` revisions. The Feature Bridge can consume observations returned by that repository, but Worker routes, Cron collection, external acquisition, and PWA UI remain unconnected in this phase.
