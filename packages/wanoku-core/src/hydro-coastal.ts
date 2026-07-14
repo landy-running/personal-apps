@@ -120,7 +120,7 @@ export type HydroCoastalProviderDefinition = {
   timeSemantics: string;
   datumSemantics: string;
   automatedAcquisitionAllowed: boolean;
-  implementationStatus: "registry-only" | "adapter-not-implemented" | "manual-fixture-only" | "implemented";
+  implementationStatus: "registry-only" | "adapter-not-implemented" | "manual-fixture-only" | "parser-implemented" | "implemented";
   notes: string[];
 };
 
@@ -190,10 +190,10 @@ export type HydroCoastalParseResult = {
   warnings: string[];
 };
 
-export type HydroCoastalProviderAdapter<Input = unknown> = {
+export type HydroCoastalProviderAdapter<Input = unknown, Context = HydroCoastalParseContext> = {
   providerId: HydroCoastalProviderId;
   sourceFormatVersion: string;
-  parse(input: Input, context: HydroCoastalParseContext): HydroCoastalParseResult;
+  parse(input: Input, context: Context): HydroCoastalParseResult;
 };
 
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -534,7 +534,7 @@ export function validateHydroCoastalProviderDefinition(provider: unknown): Hydro
   if (!isNonEmptyString(provider.timeSemantics)) errors.push("timeSemantics must not be empty.");
   if (!isNonEmptyString(provider.datumSemantics)) errors.push("datumSemantics must not be empty.");
   if (typeof provider.automatedAcquisitionAllowed !== "boolean") errors.push("automatedAcquisitionAllowed must be boolean.");
-  if (typeof provider.implementationStatus !== "string" || !["registry-only", "adapter-not-implemented", "manual-fixture-only", "implemented"].includes(provider.implementationStatus)) {
+  if (typeof provider.implementationStatus !== "string" || !["registry-only", "adapter-not-implemented", "manual-fixture-only", "parser-implemented", "implemented"].includes(provider.implementationStatus)) {
     errors.push(`implementationStatus is invalid: ${String(provider.implementationStatus)}.`);
   }
   if (provider.accessMode === "registry-only" && provider.automatedAcquisitionAllowed) {
@@ -666,8 +666,12 @@ export const HYDRO_COASTAL_PROVIDER_DEFINITIONS: HydroCoastalProviderDefinition[
     timeSemantics: "observedAt is predicted tide target time; forecastIssuedAt identifies the published table or model vintage when known.",
     datumSemantics: "Tide table datum is station-specific. Do not compare with TP unless offsetToTpM is known.",
     automatedAcquisitionAllowed: false,
-    implementationStatus: "adapter-not-implemented",
-    notes: ["No live adapter is implemented in Phase 3A.", "Use documented downloads only; do not rely on scraping."]
+    implementationStatus: "parser-implemented",
+    notes: [
+      "Phase 3B-1 implements a local documented fixed-width text parser only.",
+      "No download, live acquisition, Worker, D1, or Cron integration is implemented.",
+      "Use documented downloads only; do not rely on scraping."
+    ]
   },
   {
     providerId: "jma-tide-observation",

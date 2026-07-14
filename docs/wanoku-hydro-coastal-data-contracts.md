@@ -97,9 +97,10 @@ station type:
 - `registry-only`
 - `adapter-not-implemented`
 - `manual-fixture-only`
+- `parser-implemented`
 - `implemented`
 
-Phase 3Aでは、provider registry はあくまで契約と方針の宣言です。adapter本体は未実装です。
+Phase 3Aでは、provider registry はあくまで契約と方針の宣言でした。Phase 3B-1では `jma-tide-prediction` の local fixed-width text parser のみ `parser-implemented` です。download、自動取得、Worker、D1、Cron連携は未実装です。
 
 ## Vertical Datum
 

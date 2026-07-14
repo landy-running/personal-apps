@@ -373,7 +373,7 @@ describe("Wanoku Hydro-Coastal Data Contracts v1", () => {
 
     expect(mlit).toMatchObject({ accessMode: "licensed-distribution", automatedAcquisitionAllowed: false, implementationStatus: "registry-only" });
     expect(jcg).toMatchObject({ accessMode: "registry-only", automatedAcquisitionAllowed: false });
-    expect(jmaPrediction).toMatchObject({ accessMode: "documented-download", automatedAcquisitionAllowed: false, implementationStatus: "adapter-not-implemented" });
+    expect(jmaPrediction).toMatchObject({ accessMode: "documented-download", automatedAcquisitionAllowed: false, implementationStatus: "parser-implemented" });
   });
 
   it("rejects unknown provider IDs and automation on unimplemented providers", () => {

@@ -141,6 +141,22 @@ export {
   type VerticalDatumType
 } from "./hydro-coastal";
 export {
+  JMA_TIDE_PREDICTION_FIXED_WIDTH_ADAPTER,
+  JMA_TIDE_PREDICTION_LINE_LENGTH,
+  JMA_TIDE_PREDICTION_PARSER_ID,
+  JMA_TIDE_PREDICTION_PARSER_VERSION,
+  JMA_TIDE_PREDICTION_PROVIDER_ID,
+  JMA_TIDE_PREDICTION_SOURCE_FORMAT_VERSION,
+  JMA_TIDE_PREDICTION_STATIONS_2026,
+  decimalDegreesFromDegreesMinutes,
+  getJmaTidePredictionProviderDefinition,
+  parseJmaTidePredictionFixedWidth,
+  type JmaTideExtremum,
+  type JmaTidePredictionDailyRecord,
+  type JmaTidePredictionParseContext,
+  type JmaTidePredictionParseResult
+} from "./jma-tide-prediction";
+export {
   DEFAULT_SPECIES_FRESHNESS,
   calculateFreshness,
   findConflictingEvidence,
