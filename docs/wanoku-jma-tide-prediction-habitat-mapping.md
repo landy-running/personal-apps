@@ -76,3 +76,9 @@ builderは以下を検証します。
 - 横浜専用nodeの追加
 - station datumやTP offsetの更新
 - tide interpolation / propagationを導入する場合
+
+## Phase 3C-1 での利用状況
+
+このmappingは `Hydro-Coastal Feature Bridge v1` から、JMA潮位予測stationをHabitat Nodeへ結合するために使用します。
+
+ただし、これはまだEnvironmental Feature Engine本体との融合ではありません。node間propagation、複数station平均、釣行スコア、魚種別モデル、Worker/D1/PWA接続は未実装です。

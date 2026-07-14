@@ -141,6 +141,26 @@ export {
   type VerticalDatumType
 } from "./hydro-coastal";
 export {
+  NODE_HYDRO_COASTAL_FEATURE_SCHEMA_VERSION,
+  TIDE_PREDICTION_CHANGE_WINDOWS_HOURS,
+  buildHydroCoastalFeatureSet,
+  buildNodeHydroCoastalFeatures,
+  classifyTideTrend,
+  normalizeWaterLevelToCm,
+  validateNodeHydroCoastalFeatures,
+  type BuildHydroCoastalFeatureSetInput,
+  type BuildHydroCoastalFeatureSetResult,
+  type BuildNodeHydroCoastalFeaturesInput,
+  type HydroCoastalFeatureMissingReason,
+  type HydroCoastalFeatureProvenance,
+  type HydroCoastalFeatureValidationResult,
+  type NodeHydroCoastalDataQuality,
+  type NodeHydroCoastalFeatures,
+  type TidePredictionChangeWindowHours,
+  type TideTrendDirection,
+  type WaterLevelNormalizationResult
+} from "./hydro-coastal-features";
+export {
   JMA_TIDE_PREDICTION_FIXED_WIDTH_ADAPTER,
   JMA_TIDE_PREDICTION_LINE_LENGTH,
   JMA_TIDE_PREDICTION_PARSER_ID,
