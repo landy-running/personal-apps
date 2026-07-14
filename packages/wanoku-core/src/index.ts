@@ -157,6 +157,16 @@ export {
   type JmaTidePredictionParseResult
 } from "./jma-tide-prediction";
 export {
+  JMA_TIDE_PREDICTION_MAPPING_TARGETS_2026,
+  JMA_TIDE_PREDICTION_MAPPING_VALID_FROM,
+  JMA_TIDE_PREDICTION_MAPPING_VALID_TO,
+  JMA_TIDE_PREDICTION_MAPPING_VERSION,
+  buildJmaTidePredictionStationNodeMappings2026,
+  type JmaTidePredictionMappingBuildInput,
+  type JmaTidePredictionMappingBuildResult,
+  type JmaTidePredictionMappingTarget2026
+} from "./jma-tide-prediction-mappings";
+export {
   DEFAULT_SPECIES_FRESHNESS,
   calculateFreshness,
   findConflictingEvidence,
