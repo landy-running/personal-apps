@@ -16,8 +16,11 @@ import {
 import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
 import {
   D1_MAX_BOUND_PARAMS_PER_STATEMENT,
+  D1_JSON_PAYLOAD_MAX_BYTES,
   canonicalHydroCoastalJson,
+  chunkHydroCoastalRowsByJsonByteSize,
   chunkRowsForHydroCoastalBoundLimit,
+  createHydroCoastalObservationJsonPayload,
   hydrateHydroCoastalObservationRow,
   prepareHydroCoastalPersistenceBatch,
   readHydroCoastalHistory,
@@ -65,6 +68,25 @@ describe("Hydro-Coastal Persistence Spine repository", () => {
     expect(() => canonicalHydroCoastalJson({ a: 1n })).toThrow("bigint cannot be serialized");
     expect(() => canonicalHydroCoastalJson({ a: Number.NaN })).toThrow("non-finite number");
     expect(() => canonicalHydroCoastalJson({ a: Infinity })).toThrow("non-finite number");
+  });
+
+  it("creates deterministic JSON payloads and chunks by UTF-8 byte length", () => {
+    const rows = [
+      { versionKey: "a", stationName: "東京" },
+      { versionKey: "b", stationName: "千葉港" },
+      { versionKey: "c", stationName: "館山" }
+    ];
+    const payload = createHydroCoastalObservationJsonPayload(rows);
+    expect(payload).toBe(canonicalHydroCoastalJson(rows));
+    expect(new TextEncoder().encode(payload).byteLength).toBeGreaterThan(payload.length);
+
+    const singlePayloadBytes = rows.map((row) => new TextEncoder().encode(createHydroCoastalObservationJsonPayload([row])).byteLength);
+    const exactLimit = singlePayloadBytes[0];
+    const oneRowOnlyLimit = Math.max(...singlePayloadBytes);
+    expect(chunkHydroCoastalRowsByJsonByteSize(rows.slice(0, 1), exactLimit)).toHaveLength(1);
+    expect(chunkHydroCoastalRowsByJsonByteSize(rows, oneRowOnlyLimit).map((chunk) => chunk.rows.length)).toEqual([1, 1, 1]);
+    expect(() => chunkHydroCoastalRowsByJsonByteSize(rows.slice(0, 1), exactLimit - 1)).toThrow("single hydro-coastal observation row exceeds JSON payload limit");
+    expect(() => chunkHydroCoastalRowsByJsonByteSize([{ value: Number.POSITIVE_INFINITY }], D1_JSON_PAYLOAD_MAX_BYTES)).toThrow("non-finite number");
   });
 
   it("prepares valid observations, exact duplicates, conflicts, revisions, and provider mismatches", () => {
@@ -449,7 +471,7 @@ describe("Hydro-Coastal Persistence Spine repository", () => {
     expect(hydrated.errors).toContain("normalized_json is not canonical.");
   });
 
-  it("chunks writes below the 90 bound-parameter budget and handles empty batches", async () => {
+  it("chunks legacy helper rows and writes observations with JSON payload statements", async () => {
     const rows = Array.from({ length: 12 }, (_, index) => ({ index }));
     expect(chunkRowsForHydroCoastalBoundLimit(rows, 16).map((chunk) => chunk.length)).toEqual([5, 5, 2]);
 
@@ -458,10 +480,13 @@ describe("Hydro-Coastal Persistence Spine repository", () => {
       observedAt: new Date(Date.parse(OBSERVED_AT) + index * 3600_000).toISOString(),
       value: index
     }));
-    await writeHydroCoastalBatch(db, { sourceRun: sourceRun(), observations: many });
+    const write = await writeHydroCoastalBatch(db, { sourceRun: sourceRun(), observations: many });
     const observationInsertStatements = db.statements.filter((statement) => statement.sql.includes("INTO hydro_coastal_observations"));
-    expect(observationInsertStatements).toHaveLength(3);
+    expect(write.observationPayloadChunkCount).toBe(1);
+    expect(write.maximumPayloadChunkBytes).toBeGreaterThan(0);
+    expect(observationInsertStatements).toHaveLength(1);
     expect(observationInsertStatements.every((statement) => statement.sql.trim().startsWith("INSERT INTO"))).toBe(true);
+    expect(observationInsertStatements.every((statement) => statement.sql.includes("FROM json_each(?)"))).toBe(true);
     expect(db.statements.every((statement) => statement.params.length <= D1_MAX_BOUND_PARAMS_PER_STATEMENT)).toBe(true);
 
     const failed = await writeHydroCoastalBatch(new MockD1Database(), {
@@ -527,6 +552,53 @@ describe("Hydro-Coastal Persistence Spine repository", () => {
     expect(features.features.filter((feature) => feature.stationId !== null)).toHaveLength(5);
     expect(features.features.filter((feature) => feature.missingReasons.includes("no-active-mapping"))).toHaveLength(7);
   });
+
+  it("persists one production-scale annual JMA station file within the JSON payload query budget", async () => {
+    const db = new MockD1Database();
+    const parsed = parseJmaTidePredictionFixedWidth(buildAnnualJmaBody({ stationCode: "TK" }), {
+      provider: getJmaTidePredictionProviderDefinition(),
+      stations: JMA_TIDE_PREDICTION_STATIONS_2026,
+      sourceYear: 2026,
+      collectedAt: COLLECTED_AT,
+      normalizedAt: COLLECTED_AT,
+      forecastIssuedAt: FORECAST_ISSUED_AT,
+      sourceUrl: "https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/2026/TK.txt",
+      sourceName: "Japan Meteorological Agency tide prediction text data",
+      attribution: "Source: Japan Meteorological Agency. Normalized and processed by Wanoku."
+    });
+    const write = await writeHydroCoastalBatch(db, {
+      sourceRun: sourceRun({
+        id: "jma-2026-tk-annual",
+        sourceUrl: "https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/2026/TK.txt",
+        sourceFormatVersion: parsed.sourceFormatVersion,
+        parserId: "wanoku-jma-tide-prediction-fixed-width",
+        parserVersion: "1.0.0"
+      }),
+      observations: parsed.observations
+    });
+
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.observations).toHaveLength(8_760);
+    expect(write).toMatchObject({
+      ok: true,
+      insertedCount: 8_760,
+      duplicateCount: 0,
+      conflictCount: 0,
+      queryBudgetExceeded: false
+    });
+    expect(write.statementCount).toBeLessThan(20);
+    expect(write.lookupStatementCount).toBeLessThanOrEqual(2);
+    expect(write.writeStatementCount).toBeLessThan(20);
+    expect(write.observationPayloadChunkCount).toBeGreaterThan(0);
+    expect(write.maximumPayloadChunkBytes).toBeLessThanOrEqual(D1_JSON_PAYLOAD_MAX_BYTES);
+    expect(write.observationPayloadByteCount).toBeGreaterThan(1_000_000);
+    expect(db.sourceRuns.size).toBe(1);
+    expect(db.observations.size).toBe(8_760);
+    expect(db.statements.every((statement) => statement.params.length <= 100)).toBe(true);
+    expect(db.statements.filter((statement) => statement.sql.includes("INTO hydro_coastal_observations")).every((statement) => statement.sql.includes("FROM json_each(?)"))).toBe(true);
+    const persistedObservation = JSON.parse([...db.observations.values()][0].normalized_json);
+    expect(canonicalHydroCoastalJson(persistedObservation)).toBe([...db.observations.values()][0].normalized_json);
+  });
 });
 
 function sourceRun(overrides = {}) {
@@ -580,14 +652,26 @@ function observation(overrides = {}) {
   };
 }
 
-function buildJmaLine({ stationCode }) {
-  const hourly = Array.from({ length: 24 }, (_, index) => formatLevel3(index + 10)).join("");
-  const date = "26 1 1";
+function buildJmaLine({ stationCode, month = 1, day = 1, startLevel = 10 }) {
+  const hourly = Array.from({ length: 24 }, (_, index) => formatLevel3(index + startLevel)).join("");
+  const date = `26${String(month).padStart(2, " ")}${String(day).padStart(2, " ")}`;
   const high = "9999999999999999999999999999";
   const low = "9999999999999999999999999999";
   const line = `${hourly}${date}${stationCode}${high}${low}`;
   expect(line).toHaveLength(JMA_TIDE_PREDICTION_LINE_LENGTH);
   return line;
+}
+
+function buildAnnualJmaBody({ stationCode }) {
+  return Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 0, 1 + index));
+    return buildJmaLine({
+      stationCode,
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      startLevel: 20 + (index % 50)
+    });
+  }).join("\n");
 }
 
 function formatLevel3(value) {
@@ -656,8 +740,11 @@ class MockD1Statement {
 
   async all() {
     if (this.sql.includes("WHERE version_key IN")) {
+      const versionKeys = this.sql.includes("json_each(?)")
+        ? JSON.parse(this.params[0])
+        : this.params;
       return {
-        results: this.params
+        results: versionKeys
           .map((versionKey) => this.db.observations.get(versionKey))
           .filter(Boolean)
           .map((row) => ({ version_key: row.version_key, normalized_json: row.normalized_json }))
@@ -678,8 +765,13 @@ class MockD1Statement {
     }
     if (this.sql.includes("INTO hydro_coastal_observations")) {
       let changes = 0;
-      for (let index = 0; index < this.params.length; index += 16) {
-        const row = observationRowFromParams(this.params.slice(index, index + 16));
+      const rows = this.sql.includes("json_each(?)")
+        ? JSON.parse(this.params[0]).map(observationRowFromJsonPayload)
+        : this.params.reduce((items, _value, index) => {
+          if (index % 16 === 0) items.push(observationRowFromParams(this.params.slice(index, index + 16)));
+          return items;
+        }, []);
+      for (const row of rows) {
         if (this.db.failOnObservationVersionKeys.has(row.version_key)) {
           throw new Error(`Injected observation insert failure: ${row.version_key}`);
         }
@@ -904,6 +996,29 @@ function observationRowFromParams(params) {
     vertical_datum_json,
     normalized_schema_version,
     normalized_json,
+    created_at: "2099-01-01T00:00:00.000Z"
+  };
+}
+
+function observationRowFromJsonPayload(item) {
+  return {
+    id: 1,
+    version_key: item.versionKey,
+    identity_key: item.identityKey,
+    source_run_id: item.sourceRunId,
+    provider_id: item.providerId,
+    station_id: item.stationId,
+    metric: item.metric,
+    observed_at: item.observedAt,
+    collected_at: item.collectedAt,
+    forecast_issued_at: item.forecastIssuedAt,
+    value: item.value,
+    unit: item.unit,
+    status: item.status,
+    provisional: item.provisional,
+    vertical_datum_json: item.verticalDatumJson,
+    normalized_schema_version: item.normalizedSchemaVersion,
+    normalized_json: item.normalizedJson,
     created_at: "2099-01-01T00:00:00.000Z"
   };
 }

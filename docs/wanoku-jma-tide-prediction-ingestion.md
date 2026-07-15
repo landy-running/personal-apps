@@ -313,3 +313,33 @@ resultには以下を含めません。
 - fish model / ranking
 
 次の接続フェーズで Worker route や admin endpoint を追加する場合も、secret、raw payload、remote D1操作の扱いを別途監査してください。
+## Phase 3D-2B admin route connection
+
+`POST /admin/collect-jma-tide-prediction` now calls `ingestJmaTidePredictionSource()` for one allowlisted station and one source year per request.
+
+Request body:
+
+```json
+{
+  "stationId": "TK",
+  "sourceYear": 2026,
+  "forecastIssuedAt": "2025-12-30T00:00:00.000Z"
+}
+```
+
+Important boundaries:
+
+- `forecastIssuedAt` remains caller supplied canonical UTC ISO metadata.
+- The route does not infer `forecastIssuedAt` from fetch time, HTTP headers, or current time.
+- The route rejects unsupported request fields such as `sourceUrl`, `sourceName`, and `attribution`.
+- Official source URL, source name, and attribution come from the JMA source catalog.
+- Raw response bytes and decoded text are not returned and are not stored in D1.
+- The route is admin-only and reuses `WANOKU_ADMIN_SECRET`.
+- Cron/scheduled automatic ingestion is still not connected.
+
+Production-scale behavior:
+
+- One common-year station file is expected to produce 8,760 observations.
+- The persistence layer writes observations through JSON payload chunks and `json_each(?)`.
+- The 2026 TK annual fixture test inserts 8,760 observations with 17 repository statements.
+- The route processes exactly one station per request; 5 stations require 5 explicit admin requests.

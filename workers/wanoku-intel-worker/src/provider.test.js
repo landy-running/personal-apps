@@ -16,6 +16,9 @@ import worker, {
 import {
   TOKYO_BAY_ENVIRONMENT_NODES
 } from "./environment-nodes.js";
+import {
+  JMA_TIDE_PREDICTION_LINE_LENGTH
+} from "../../../packages/wanoku-core/src/jma-tide-prediction.ts";
 
 const node = TOKYO_BAY_ENVIRONMENT_NODES[0];
 
@@ -159,6 +162,202 @@ class FakeD1 {
       }
     };
   }
+}
+
+class HydroD1 {
+  constructor(options = {}) {
+    this.sourceRuns = new Map();
+    this.observations = new Map();
+    this.statements = [];
+    this.failBatch = options.failBatch ?? false;
+  }
+
+  prepare(sql) {
+    return new HydroD1Statement(this, sql);
+  }
+
+  async batch(statements) {
+    const sourceRuns = new Map(this.sourceRuns);
+    const observations = new Map(this.observations);
+    try {
+      if (this.failBatch) throw new Error("Injected hydro D1 batch failure with SECRET_INTERNAL_DETAIL");
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    } catch (error) {
+      this.sourceRuns = sourceRuns;
+      this.observations = observations;
+      throw error;
+    }
+  }
+}
+
+class HydroD1Statement {
+  constructor(db, sql) {
+    this.db = db;
+    this.sql = sql;
+    this.params = [];
+  }
+
+  bind(...params) {
+    this.params = params;
+    this.db.statements.push({ sql: this.sql, params });
+    return this;
+  }
+
+  async first() {
+    if (this.sql.includes("FROM hydro_coastal_source_runs")) {
+      return this.db.sourceRuns.get(this.params[0]) || null;
+    }
+    return null;
+  }
+
+  async all() {
+    if (this.sql.includes("WHERE version_key IN")) {
+      const versionKeys = this.sql.includes("json_each(?)") ? JSON.parse(this.params[0]) : this.params;
+      return {
+        results: versionKeys
+          .map((versionKey) => this.db.observations.get(versionKey))
+          .filter(Boolean)
+          .map((row) => ({ version_key: row.version_key, normalized_json: row.normalized_json }))
+      };
+    }
+    return { results: [] };
+  }
+
+  async run() {
+    if (this.sql.includes("INTO hydro_coastal_source_runs")) {
+      const row = hydroSourceRunRowFromParams(this.params);
+      if (this.db.sourceRuns.has(row.id)) throw new Error("UNIQUE constraint failed: hydro_coastal_source_runs.id");
+      this.db.sourceRuns.set(row.id, row);
+      return { meta: { changes: 1 } };
+    }
+    if (this.sql.includes("INTO hydro_coastal_observations")) {
+      const rows = this.sql.includes("json_each(?)")
+        ? JSON.parse(this.params[0]).map(hydroObservationRowFromJsonPayload)
+        : [];
+      let changes = 0;
+      for (const row of rows) {
+        if (this.db.observations.has(row.version_key)) throw new Error("UNIQUE constraint failed: hydro_coastal_observations.version_key");
+        this.db.observations.set(row.version_key, row);
+        changes += 1;
+      }
+      return { meta: { changes } };
+    }
+    return { meta: { changes: 0 } };
+  }
+}
+
+function hydroSourceRunRowFromParams(params) {
+  const [
+    id,
+    provider_id,
+    requested_at,
+    completed_at,
+    status,
+    http_status,
+    error_code,
+    raw_hash,
+    source_name,
+    source_url,
+    parser_id,
+    parser_version,
+    source_format_version,
+    normalized_schema_version,
+    run_json
+  ] = params;
+  return {
+    id,
+    provider_id,
+    requested_at,
+    completed_at,
+    status,
+    http_status,
+    error_code,
+    raw_hash,
+    source_name,
+    source_url,
+    parser_id,
+    parser_version,
+    source_format_version,
+    normalized_schema_version,
+    run_json,
+    created_at: "2026-07-15T00:00:00.000Z"
+  };
+}
+
+function hydroObservationRowFromJsonPayload(item) {
+  return {
+    id: 1,
+    version_key: item.versionKey,
+    identity_key: item.identityKey,
+    source_run_id: item.sourceRunId,
+    provider_id: item.providerId,
+    station_id: item.stationId,
+    metric: item.metric,
+    observed_at: item.observedAt,
+    collected_at: item.collectedAt,
+    forecast_issued_at: item.forecastIssuedAt,
+    value: item.value,
+    unit: item.unit,
+    status: item.status,
+    provisional: item.provisional,
+    vertical_datum_json: item.verticalDatumJson,
+    normalized_schema_version: item.normalizedSchemaVersion,
+    normalized_json: item.normalizedJson,
+    created_at: "2026-07-15T00:00:00.000Z"
+  };
+}
+
+function responseFromText(text, { status = 200, ok = status >= 200 && status < 300, onArrayBuffer } = {}) {
+  const bytes = new TextEncoder().encode(text);
+  return {
+    ok,
+    status,
+    async arrayBuffer() {
+      onArrayBuffer?.();
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    }
+  };
+}
+
+function annualJmaBody(station) {
+  return Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 0, 1 + index));
+    return jmaLine(station, {
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      startLevel: 60 + (index % 40)
+    });
+  }).join("\n");
+}
+
+function jmaLine(station, { month = 1, day = 1, startLevel = 100 } = {}) {
+  const hourly = Array.from({ length: 24 }, (_, hour) => String(startLevel + hour).padStart(3, " ")).join("");
+  const date = `26${String(month).padStart(2, " ")}${String(day).padStart(2, " ")}`;
+  const highTides = ["0130123", "1410134", "9999999", "9999999"].join("");
+  const lowTides = ["0720 45", "2000 56", "9999999", "9999999"].join("");
+  const line = `${hourly}${date}${station}${highTides}${lowTides}`;
+  expect(line).toHaveLength(JMA_TIDE_PREDICTION_LINE_LENGTH);
+  return line;
+}
+
+function postJmaAdmin(db) {
+  return worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer test-secret"
+    },
+    body: JSON.stringify({
+      stationId: "TK",
+      sourceYear: 2026,
+      forecastIssuedAt: "2025-12-30T00:00:00.000Z"
+    })
+  }), {
+    WANOKU_ADMIN_SECRET: "test-secret",
+    WANOKU_INTEL_D1: db
+  });
 }
 
 function snapshotRow({
@@ -564,6 +763,193 @@ describe("wanoku intel worker environmental providers", () => {
     expect(body.externalFetchCount).toBe(1);
     expect(body.nodeCount).toBe(1);
     expect(body.providerCount).toBe(1);
+  });
+
+  it("collects one JMA tide prediction station through the protected admin route at annual scale", async () => {
+    const db = new HydroD1();
+    const sourceText = annualJmaBody("TK");
+    let bodyReadCount = 0;
+    vi.stubGlobal("fetch", async () => responseFromText(sourceText, { onArrayBuffer: () => { bodyReadCount += 1; } }));
+
+    const response = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test-secret"
+      },
+      body: JSON.stringify({
+        stationId: "TK",
+        sourceYear: 2026,
+        forecastIssuedAt: "2025-12-30T00:00:00.000Z"
+      })
+    }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: db
+    });
+    vi.unstubAllGlobals();
+
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      status: "ok",
+      stationId: "TK",
+      sourceYear: 2026,
+      sourceUrl: "https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/2026/TK.txt",
+      parsedObservationCount: 8_760
+    });
+    expect(body.persistence).toMatchObject({
+      ok: true,
+      insertedCount: 8_760,
+      queryBudgetExceeded: false
+    });
+    expect(body.persistence.statementCount).toBeLessThan(20);
+    expect(body.persistence.maximumPayloadChunkBytes).toBeLessThanOrEqual(1_500_000);
+    expect(bodyReadCount).toBe(1);
+    expect(db.sourceRuns.size).toBe(1);
+    expect(db.observations.size).toBe(8_760);
+    expect(db.statements.every((statement) => statement.params.length <= 100)).toBe(true);
+    expect(JSON.stringify(body)).not.toContain(sourceText.slice(0, 100));
+    expect(JSON.stringify(body)).not.toContain("test-secret");
+  });
+
+  it("validates the JMA tide prediction admin route before any fetch", async () => {
+    const invalidRequests = [
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", Authorization: "Bearer test-secret" },
+        body: "{}"
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: "{bad"
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify([])
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "ZZ", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2027, forecastIssuedAt: "2025-12-30T00:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T09:00:00+09:00" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceUrl: "https://evil.example/secret.txt" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", extra: "nope" })
+      })
+    ];
+    let fetchCalled = false;
+    vi.stubGlobal("fetch", async () => {
+      fetchCalled = true;
+      return responseFromText(jmaLine("TK"));
+    });
+
+    for (const request of invalidRequests) {
+      const response = await worker.fetch(request, {
+        WANOKU_ADMIN_SECRET: "test-secret",
+        WANOKU_INTEL_D1: new HydroD1()
+      });
+      expect(response.status).toBe(400);
+    }
+    const largeResponse = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+      body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", filler: "x".repeat(5000) })
+    }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: new HydroD1()
+    });
+    vi.unstubAllGlobals();
+
+    expect(largeResponse.status).toBe(400);
+    expect(fetchCalled).toBe(false);
+  });
+
+  it("maps JMA tide prediction admin auth, upstream, partial, and persistence failures safely", async () => {
+    const unauthorized = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: new HydroD1()
+    });
+    const missingSecret = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+      body: "{}"
+    }), {
+      WANOKU_INTEL_D1: new HydroD1()
+    });
+    const wrongMethod = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+      method: "PUT",
+      headers: { Authorization: "Bearer test-secret" }
+    }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: new HydroD1()
+    });
+
+    vi.stubGlobal("fetch", async () => responseFromText("not parsed", { status: 404 }));
+    const upstream = await postJmaAdmin(new HydroD1());
+    vi.stubGlobal("fetch", async () => responseFromText([jmaLine("TK"), jmaLine("ZZ")].join("\n")));
+    const partial = await postJmaAdmin(new HydroD1());
+    vi.stubGlobal("fetch", async () => responseFromText(jmaLine("TK")));
+    const persistence = await postJmaAdmin(new HydroD1({ failBatch: true }));
+    vi.unstubAllGlobals();
+
+    expect(unauthorized.status).toBe(403);
+    expect(missingSecret.status).toBe(503);
+    expect(wrongMethod.status).toBe(405);
+    expect(upstream.status).toBe(502);
+    expect((await upstream.json()).errors.map((item) => item.code)).toContain("http_error");
+    const partialBody = await partial.json();
+    expect(partial.status).toBe(207);
+    expect(partialBody.status).toBe("partial");
+    expect(partialBody.persistence.insertedCount).toBe(24);
+    const persistenceBody = await persistence.json();
+    expect(persistence.status).toBe(500);
+    expect(persistenceBody.errors.map((item) => item.code)).toContain("persistence_error");
+    expect(JSON.stringify(persistenceBody)).not.toContain("Injected");
+  });
+
+  it("lists the JMA tide prediction admin route in health without changing collect-environment", async () => {
+    const health = await worker.fetch(new Request("https://worker.example/health"), {});
+    const healthBody = await health.json();
+
+    expect(healthBody.endpoints).toContain("POST /admin/collect-jma-tide-prediction");
+    vi.stubGlobal("fetch", async () => okJson(batchPayload("open-meteo-weather-hourly.json", [node])));
+    const environment = await worker.fetch(new Request(`https://worker.example/admin/collect-environment?provider=weather&node_id=${node.id}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer test-secret" }
+    }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: new FakeD1()
+    });
+    vi.unstubAllGlobals();
+    expect(environment.status).toBe(200);
   });
 
   it("keeps legacy snapshot_key readable without regenerating it", async () => {

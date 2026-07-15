@@ -117,3 +117,34 @@ adapter実装前に確認すること:
 - datum不明の水位を暗黙比較しない
 - source timestampをUTCと誤解釈しない
 - synthetic fixtureを実在データとして扱わない
+## Phase 3D-2B JMA tide prediction official source catalog
+
+The Worker now has a local official source catalog for the JMA tide prediction text data.
+
+Official URL pattern:
+
+```text
+https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/{year}/{stationId}.txt
+```
+
+Currently allowlisted:
+
+- `sourceYear`: `2026`
+- `stationId`: `TK`, `CB`, `KZ`, `QS`, `TT`
+
+The station list is derived from `JMA_TIDE_PREDICTION_STATIONS_2026`; the Worker source catalog does not maintain a separate hand-written station list.
+
+Security policy:
+
+- Admin request bodies cannot supply arbitrary `sourceUrl`.
+- Query strings, fragments, credentials, path traversal, and unsupported station/year values are rejected before fetch.
+- Source name and attribution come from the catalog.
+- Raw source bodies are not stored or returned.
+
+Automation status:
+
+- Local parser: implemented.
+- Admin manual ingestion route: implemented.
+- Cron/scheduled ingestion: not connected.
+- Public read API: not connected.
+- Feature Bridge automatic execution: not connected.

@@ -214,3 +214,31 @@ Not connected yet:
 - fish scoring
 
 Remote migration has not been applied by this documentation.
+
+## Phase 3D-2B production-scale bulk write
+
+JMA tide prediction annual text is expected to produce about 8,760 observations per station in a common year, and about 43,800 observations for the 5 initial stations.
+
+The repository no longer writes observations with 16 bound parameters per row on the production path. Observation inserts use one JSON array bind parameter per chunk:
+
+```sql
+INSERT INTO hydro_coastal_observations (...)
+SELECT json_extract(value, '$.versionKey'), ...
+FROM json_each(?)
+```
+
+`version_key` preflight lookup also uses a JSON array plus `json_each(?)` instead of a large `IN (?, ?, ...)` list.
+
+Current limits and diagnostics:
+
+- `D1_JSON_PAYLOAD_MAX_BYTES = 1_500_000`
+- payload size is measured as UTF-8 bytes, not JavaScript string length
+- each SQL statement normally has 1 bound parameter for observation lookup/insert
+- each SQL statement remains below the 90-bound-parameter repository budget
+- write results include `lookupStatementCount`, `writeStatementCount`, `observationPayloadChunkCount`, `observationPayloadByteCount`, `maximumPayloadChunkBytes`, `effectiveAttemptLimit`, and `queryBudgetExceeded`
+
+In tests, one 2026 TK annual fixture produced 8,760 observations and completed in 17 total repository statements: 2 lookup statements and 15 write statements. This remains below the Workers Free safety goal of 20 total D1 statements and well below the hard budget of 50.
+
+The source run and all observation JSON chunks are still written inside one `db.batch()` attempt. The repository still uses plain `INSERT`; `INSERT OR IGNORE` and `INSERT OR REPLACE` are not used. Race handling re-reads existing source runs and observation version keys after rollback and classifies them as exact duplicate, conflict, or still pending.
+
+Raw provider payloads are still not stored. `normalized_json` remains the canonical full observation JSON and is verified again during hydration.

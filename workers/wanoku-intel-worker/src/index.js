@@ -1,4 +1,6 @@
 import { TOKYO_BAY_ENVIRONMENT_NODES } from "./environment-nodes.js";
+import { ingestJmaTidePredictionSource } from "./jma-tide-prediction-ingestion.js";
+import { getJmaTidePredictionSourceDefinition } from "./jma-tide-prediction-sources.js";
 
 const SERVICE_NAME = "wanoku-intel-worker";
 const DEFAULT_WANOKU_PWA_ORIGIN = "https://wanoku-pwa.pages.dev";
@@ -15,6 +17,8 @@ const MARINE_PROVIDER = "open-meteo-marine";
 const MAX_SNAPSHOTS_PER_PROVIDER = 73;
 const COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER = 1;
 const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
+const ADMIN_JMA_TIDE_BODY_MAX_BYTES = 4096;
+const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const SOURCE_RUN_COLUMNS = [
   "id",
   "provider",
@@ -1246,6 +1250,198 @@ function round(value, digits = 4) {
   return Math.round(value * factor) / factor;
 }
 
+async function handleCollectJmaTidePrediction(request, env) {
+  const auth = isAdminAuthorized(request, env);
+  if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
+  if (!env?.WANOKU_INTEL_D1 || typeof env.WANOKU_INTEL_D1.prepare !== "function" || typeof env.WANOKU_INTEL_D1.batch !== "function") {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+
+  const bodyResult = await readAdminJsonBody(request, ADMIN_JMA_TIDE_BODY_MAX_BYTES);
+  if (!bodyResult.ok) {
+    return json(request, env, { ok: false, error: bodyResult.error, message: bodyResult.message }, { status: 400 });
+  }
+  const validation = validateJmaTidePredictionAdminBody(bodyResult.body);
+  if (!validation.ok) {
+    return json(request, env, {
+      ok: false,
+      error: "invalid_request",
+      errors: validation.errors
+    }, { status: 400 });
+  }
+
+  const catalog = getJmaTidePredictionSourceDefinition({
+    stationId: validation.body.stationId,
+    sourceYear: validation.body.sourceYear
+  });
+  if (!catalog.ok) {
+    return json(request, env, {
+      ok: false,
+      error: "unsupported_jma_tide_prediction_source",
+      errors: catalog.errors
+    }, { status: 400 });
+  }
+
+  try {
+    const result = await ingestJmaTidePredictionSource({
+      db: env.WANOKU_INTEL_D1,
+      sourceUrl: catalog.source.sourceUrl,
+      sourceYear: catalog.source.sourceYear,
+      forecastIssuedAt: validation.body.forecastIssuedAt,
+      sourceName: catalog.source.sourceName,
+      attribution: catalog.source.attribution
+    });
+    return json(request, env, sanitizeJmaTidePredictionIngestionResponse(result, catalog.source), {
+      status: httpStatusForJmaTidePredictionIngestion(result)
+    });
+  } catch (error) {
+    console.error("jma_tide_prediction_ingestion_failed", {
+      message: error?.message || "JMA tide prediction ingestion failed."
+    });
+    return json(request, env, {
+      ok: false,
+      error: "jma_tide_prediction_ingestion_failed",
+      message: "JMA tide prediction ingestion failed."
+    }, { status: 500 });
+  }
+}
+
+async function readAdminJsonBody(request, maxBytes) {
+  const contentType = request.headers.get("Content-Type") || "";
+  if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
+    return { ok: false, error: "unsupported_content_type", message: "Content-Type must be application/json." };
+  }
+  let text;
+  try {
+    text = await request.text();
+  } catch {
+    return { ok: false, error: "body_read_failed", message: "Request body could not be read." };
+  }
+  if (new TextEncoder().encode(text).byteLength > maxBytes) {
+    return { ok: false, error: "body_too_large", message: "Request body is too large." };
+  }
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "malformed_json", message: "Request body must be valid JSON." };
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, error: "invalid_json_body", message: "Request body must be a JSON object." };
+  }
+  return { ok: true, body };
+}
+
+function validateJmaTidePredictionAdminBody(body) {
+  const allowed = new Set(["stationId", "sourceYear", "forecastIssuedAt"]);
+  const errors = [];
+  for (const key of Object.keys(body)) {
+    if (!allowed.has(key)) errors.push(`unsupported field: ${key}`);
+  }
+  if (typeof body.stationId !== "string" || body.stationId.trim() === "") errors.push("stationId is required.");
+  if (!Number.isInteger(body.sourceYear)) errors.push("sourceYear is required and must be an integer.");
+  if (!isCanonicalUtcIsoDateTime(body.forecastIssuedAt)) errors.push("forecastIssuedAt is required and must be canonical UTC ISO datetime.");
+  return {
+    ok: errors.length === 0,
+    body: {
+      stationId: body.stationId,
+      sourceYear: body.sourceYear,
+      forecastIssuedAt: body.forecastIssuedAt
+    },
+    errors
+  };
+}
+
+function httpStatusForJmaTidePredictionIngestion(result) {
+  if (result?.status === "partial" && result?.persistence?.insertedCount > 0) return 207;
+  if (result?.status === "ok" && result?.persistence?.ok === true && result?.ok === true) return 200;
+  const errorCodes = new Set((result?.errors || []).map((item) => item?.code).filter(Boolean));
+  if (errorCodes.has("invalid_input")) return 400;
+  if (errorCodes.has("fetch_error") || errorCodes.has("http_error") || errorCodes.has("body_read_error") || errorCodes.has("empty_body") || errorCodes.has("decode_error") || errorCodes.has("parse_failed") || errorCodes.has("no_observations")) {
+    return 502;
+  }
+  if (errorCodes.has("persistence_error") || result?.persistence?.ok === false) return 500;
+  return 500;
+}
+
+function sanitizeJmaTidePredictionIngestionResponse(result, source) {
+  return {
+    ok: Boolean(result?.ok),
+    status: result?.status || "failed",
+    stationId: source.stationId,
+    sourceYear: source.sourceYear,
+    sourceRunId: result?.sourceRunId ?? null,
+    sourceUrl: source.sourceUrl,
+    requestedAt: result?.requestedAt ?? null,
+    completedAt: result?.completedAt ?? null,
+    forecastIssuedAt: result?.forecastIssuedAt ?? null,
+    httpStatus: result?.httpStatus ?? null,
+    rawHash: result?.rawHash ?? null,
+    sourceByteLength: result?.sourceByteLength ?? null,
+    parsedObservationCount: result?.parsedObservationCount ?? 0,
+    parserErrorCount: result?.parserErrorCount ?? 0,
+    parserWarningCount: result?.parserWarningCount ?? 0,
+    persistence: sanitizePersistenceResult(result?.persistence),
+    errors: sanitizeDiagnostics(result?.errors),
+    warnings: sanitizeDiagnostics(result?.warnings)
+  };
+}
+
+function sanitizePersistenceResult(persistence) {
+  if (!persistence || typeof persistence !== "object") return null;
+  return {
+    ok: Boolean(persistence.ok),
+    partial: Boolean(persistence.partial),
+    sourceRunId: persistence.sourceRunId ?? null,
+    inputObservationCount: numberOrZero(persistence.inputObservationCount),
+    validObservationCount: numberOrZero(persistence.validObservationCount),
+    insertedCount: numberOrZero(persistence.insertedCount),
+    duplicateCount: numberOrZero(persistence.duplicateCount),
+    conflictCount: numberOrZero(persistence.conflictCount),
+    invalidCount: numberOrZero(persistence.invalidCount),
+    statementCount: numberOrZero(persistence.statementCount),
+    lookupStatementCount: numberOrZero(persistence.lookupStatementCount),
+    writeStatementCount: numberOrZero(persistence.writeStatementCount),
+    observationPayloadChunkCount: numberOrZero(persistence.observationPayloadChunkCount),
+    observationPayloadByteCount: numberOrZero(persistence.observationPayloadByteCount),
+    maximumPayloadChunkBytes: numberOrZero(persistence.maximumPayloadChunkBytes),
+    queryBudgetExceeded: Boolean(persistence.queryBudgetExceeded),
+    errors: stringArray(persistence.errors),
+    warnings: stringArray(persistence.warnings)
+  };
+}
+
+function sanitizeDiagnostics(items) {
+  return Array.isArray(items)
+    ? items.map((item) => ({
+      code: typeof item?.code === "string" ? item.code : "diagnostic",
+      message: typeof item?.message === "string" ? item.message : "diagnostic redacted."
+    }))
+    : [];
+}
+
+function stringArray(items) {
+  return Array.isArray(items)
+    ? items.filter((item) => typeof item === "string").map(sanitizeDiagnosticString)
+    : [];
+}
+
+function sanitizeDiagnosticString(value) {
+  const normalized = value.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/secret|token|authorization|stack|injected/i.test(normalized)) return "diagnostic redacted.";
+  return normalized.length > 240 ? `${normalized.slice(0, 240)}...` : normalized;
+}
+
+function numberOrZero(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function isCanonicalUtcIsoDateTime(value) {
+  if (typeof value !== "string" || !CANONICAL_UTC_ISO_DATETIME.test(value)) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+}
+
 async function handleRequest(request, env) {
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -1270,6 +1466,10 @@ async function handleRequest(request, env) {
     return json(request, env, result, { status: result.ok ? 200 : 500 });
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/collect-jma-tide-prediction") {
+    return handleCollectJmaTidePrediction(request, env);
+  }
+
   if (request.method !== "GET") {
     return json(request, env, { error: "method_not_allowed" }, { status: 405 });
   }
@@ -1289,7 +1489,8 @@ async function handleRequest(request, env) {
         "/environment/current",
         "/environment/history",
         "/environment/quality",
-        "POST /admin/collect-environment"
+        "POST /admin/collect-environment",
+        "POST /admin/collect-jma-tide-prediction"
       ]
     });
   }

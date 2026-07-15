@@ -59,6 +59,39 @@ describe("JMA Tide Prediction Ingestion Orchestrator", () => {
     expect(sourceRun.run_json).not.toContain(sourceText);
   });
 
+  it("ingests one production-scale annual station file through bulk persistence", async () => {
+    const db = new MockD1Database();
+    const sourceText = annualStationBody("TK");
+    const sourceBytes = bytesFromText(sourceText);
+    let bodyReadCount = 0;
+    const result = await ingestJmaTidePredictionSource({
+      ...baseInput(db),
+      sourceUrl: "https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/2026/TK.txt",
+      fetchImpl: async () => responseFromBytes(sourceBytes, { onArrayBuffer: () => { bodyReadCount += 1; } }),
+      now: nowSequence([REQUESTED_AT, COMPLETED_AT])
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("ok");
+    expect(result.parsedObservationCount).toBe(8_760);
+    expect(result.persistence).toMatchObject({
+      ok: true,
+      insertedCount: 8_760,
+      duplicateCount: 0,
+      conflictCount: 0,
+      queryBudgetExceeded: false
+    });
+    expect(result.persistence.statementCount).toBeLessThan(20);
+    expect(result.persistence.writeStatementCount).toBeLessThan(20);
+    expect(result.persistence.maximumPayloadChunkBytes).toBeLessThanOrEqual(1_500_000);
+    expect(bodyReadCount).toBe(1);
+    expect(db.sourceRuns.size).toBe(1);
+    expect(db.observations.size).toBe(8_760);
+    expect(db.statements.every((statement) => statement.params.length <= 100)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(sourceText.slice(0, 100));
+    expect([...db.sourceRuns.values()][0].run_json).not.toContain(sourceText.slice(0, 100));
+  });
+
   it("computes SHA-256 from raw bytes as lowercase hexadecimal", async () => {
     await expect(sha256HexFromBytes(bytesFromText("abc"))).resolves.toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -665,6 +698,18 @@ function fiveStationBody() {
   return ["TK", "CB", "KZ", "QS", "TT"].map((station, index) => jmaLine({ station, startLevel: 100 + index * 10 })).join("\n");
 }
 
+function annualStationBody(station) {
+  return Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 0, 1 + index));
+    return jmaLine({
+      station,
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      startLevel: 50 + (index % 60)
+    });
+  }).join("\n");
+}
+
 function jmaLine({ station = "TK", year = 26, month = 1, day = 1, startLevel = 100 } = {}) {
   const hourly = Array.from({ length: 24 }, (_, hour) => String(startLevel + hour).padStart(3, " ")).join("");
   const date = `${String(year).padStart(2, "0")}${String(month).padStart(2, " ")}${String(day).padStart(2, " ")}`;
@@ -729,8 +774,11 @@ class MockD1Statement {
 
   async all() {
     if (this.sql.includes("WHERE version_key IN")) {
+      const versionKeys = this.sql.includes("json_each(?)")
+        ? JSON.parse(this.params[0])
+        : this.params;
       return {
-        results: this.params
+        results: versionKeys
           .map((versionKey) => this.db.observations.get(versionKey))
           .filter(Boolean)
           .map((row) => ({ version_key: row.version_key, normalized_json: row.normalized_json }))
@@ -748,8 +796,13 @@ class MockD1Statement {
     }
     if (this.sql.includes("INTO hydro_coastal_observations")) {
       let changes = 0;
-      for (let index = 0; index < this.params.length; index += 16) {
-        const row = observationRowFromParams(this.params.slice(index, index + 16));
+      const rows = this.sql.includes("json_each(?)")
+        ? JSON.parse(this.params[0]).map(observationRowFromJsonPayload)
+        : this.params.reduce((items, _value, index) => {
+          if (index % 16 === 0) items.push(observationRowFromParams(this.params.slice(index, index + 16)));
+          return items;
+        }, []);
+      for (const row of rows) {
         if (this.db.observations.has(row.version_key)) throw new Error("UNIQUE constraint failed: hydro_coastal_observations.version_key");
         this.db.observations.set(row.version_key, row);
         changes += 1;
@@ -835,6 +888,29 @@ function observationRowFromParams(params) {
     vertical_datum_json,
     normalized_schema_version,
     normalized_json,
+    created_at: "2026-07-15T00:00:00.000Z"
+  };
+}
+
+function observationRowFromJsonPayload(item) {
+  return {
+    id: 1,
+    version_key: item.versionKey,
+    identity_key: item.identityKey,
+    source_run_id: item.sourceRunId,
+    provider_id: item.providerId,
+    station_id: item.stationId,
+    metric: item.metric,
+    observed_at: item.observedAt,
+    collected_at: item.collectedAt,
+    forecast_issued_at: item.forecastIssuedAt,
+    value: item.value,
+    unit: item.unit,
+    status: item.status,
+    provisional: item.provisional,
+    vertical_datum_json: item.verticalDatumJson,
+    normalized_schema_version: item.normalizedSchemaVersion,
+    normalized_json: item.normalizedJson,
     created_at: "2026-07-15T00:00:00.000Z"
   };
 }

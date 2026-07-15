@@ -10,6 +10,8 @@ import {
 export const HYDRO_COASTAL_PERSISTENCE_SCHEMA_VERSION = "wanoku-hydro-coastal-persistence.v1";
 export const HYDRO_COASTAL_SOURCE_RUN_STATUSES = ["ok", "partial", "failed"];
 export const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
+export const D1_JSON_PAYLOAD_MAX_BYTES = 1_500_000;
+export const HYDRO_COASTAL_WRITE_QUERY_BUDGET = 50;
 export const HYDRO_COASTAL_MAX_WRITE_ATTEMPTS = 3;
 
 const SOURCE_RUN_TABLE = "hydro_coastal_source_runs";
@@ -50,9 +52,61 @@ const OBSERVATION_COLUMNS = [
   "normalized_json"
 ];
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const TEXT_ENCODER = new TextEncoder();
 
 export function canonicalHydroCoastalJson(value) {
   return stableSerialize(value, true);
+}
+
+export function createHydroCoastalObservationJsonPayload(rows) {
+  return canonicalHydroCoastalJson(rows);
+}
+
+export function chunkHydroCoastalRowsByJsonByteSize(rows, maxBytes = D1_JSON_PAYLOAD_MAX_BYTES) {
+  if (!Number.isInteger(maxBytes) || maxBytes <= 2) {
+    throw new Error("maxBytes must be an integer greater than the JSON array overhead.");
+  }
+  const chunks = [];
+  let currentRows = [];
+  let currentRowJsons = [];
+  let currentBytes = utf8ByteLength("[]");
+
+  for (const row of rows) {
+    const rowJson = canonicalHydroCoastalJson(row);
+    const rowBytes = utf8ByteLength(rowJson);
+    const singlePayloadBytes = utf8ByteLength("[") + rowBytes + utf8ByteLength("]");
+    if (singlePayloadBytes > maxBytes) {
+      throw new Error(`single hydro-coastal observation row exceeds JSON payload limit: ${singlePayloadBytes} bytes > ${maxBytes} bytes.`);
+    }
+    const addedBytes = rowBytes + (currentRows.length ? utf8ByteLength(",") : 0);
+    if (currentRows.length && currentBytes + addedBytes > maxBytes) {
+      const payload = `[${currentRowJsons.join(",")}]`;
+      chunks.push({ rows: currentRows, payload, byteLength: utf8ByteLength(payload) });
+      currentRows = [];
+      currentRowJsons = [];
+      currentBytes = utf8ByteLength("[]");
+    }
+    currentRows.push(row);
+    currentRowJsons.push(rowJson);
+    currentBytes += rowBytes + (currentRows.length > 1 ? utf8ByteLength(",") : 0);
+  }
+
+  if (currentRows.length) {
+    const payload = `[${currentRowJsons.join(",")}]`;
+    chunks.push({ rows: currentRows, payload, byteLength: utf8ByteLength(payload) });
+  }
+
+  return chunks;
+}
+
+export function buildHydroCoastalBulkInsertStatement(db, rows) {
+  const payload = createHydroCoastalObservationJsonPayload(rows);
+  return {
+    statement: db.prepare(bulkObservationInsertSql()).bind(payload),
+    payload,
+    payloadByteLength: utf8ByteLength(payload),
+    rowCount: rows.length
+  };
 }
 
 export function prepareHydroCoastalPersistenceBatch(input) {
@@ -186,6 +240,13 @@ export async function writeHydroCoastalBatch(db, input) {
     conflictCount: prepared.conflictCount,
     invalidCount: prepared.invalidCount,
     statementCount: 0,
+    lookupStatementCount: 0,
+    writeStatementCount: 0,
+    observationPayloadChunkCount: 0,
+    observationPayloadByteCount: 0,
+    maximumPayloadChunkBytes: 0,
+    effectiveAttemptLimit: HYDRO_COASTAL_MAX_WRITE_ATTEMPTS,
+    queryBudgetExceeded: false,
     errors: [...prepared.errors],
     warnings: [...prepared.warnings]
   };
@@ -215,6 +276,7 @@ export async function writeHydroCoastalBatch(db, input) {
 
   const sourceRunCheck = await readExistingSourceRun(db, prepared.sourceRun.id);
   result.statementCount += sourceRunCheck.statementCount;
+  result.lookupStatementCount += sourceRunCheck.statementCount;
   if (sourceRunCheck.error) {
     result.errors.push(sourceRunCheck.error);
     return finalizeWriteResult(result);
@@ -231,6 +293,7 @@ export async function writeHydroCoastalBatch(db, input) {
 
   const existingObservationCheck = await readExistingObservationRows(db, prepared.observationRows.map((row) => row.versionKey));
   result.statementCount += existingObservationCheck.statementCount;
+  result.lookupStatementCount += existingObservationCheck.statementCount;
   if (existingObservationCheck.error) {
     result.errors.push(existingObservationCheck.error);
     return finalizeWriteResult(result);
@@ -258,8 +321,24 @@ export async function writeHydroCoastalBatch(db, input) {
 
     const statements = [];
     if (shouldInsertSourceRun) statements.push(sourceRunInsertStatement(db, prepared.sourceRunRow));
-    statements.push(...observationInsertStatements(db, pendingRows));
+    let observationStatements;
+    try {
+      observationStatements = observationInsertStatements(db, pendingRows);
+    } catch (error) {
+      result.errors.push(`observation payload chunking failed: ${error.message}`);
+      return finalizeWriteResult(result);
+    }
+    statements.push(...observationStatements.statements);
+    if (result.statementCount + statements.length > HYDRO_COASTAL_WRITE_QUERY_BUDGET) {
+      result.queryBudgetExceeded = true;
+      result.errors.push(`hydro-coastal write query budget exceeded: planned ${result.statementCount + statements.length} statements > ${HYDRO_COASTAL_WRITE_QUERY_BUDGET}.`);
+      return finalizeWriteResult(result);
+    }
     result.statementCount += statements.length;
+    result.writeStatementCount += statements.length;
+    result.observationPayloadChunkCount += observationStatements.chunkCount;
+    result.observationPayloadByteCount += observationStatements.totalPayloadBytes;
+    result.maximumPayloadChunkBytes = Math.max(result.maximumPayloadChunkBytes, observationStatements.maximumPayloadChunkBytes);
 
     try {
       await db.batch(statements);
@@ -271,12 +350,14 @@ export async function writeHydroCoastalBatch(db, input) {
         ? await classifySourceRunRace(db, prepared, result, sourceRunDuplicateWarned)
         : { shouldInsertSourceRun, sourceRunDuplicateWarned };
       result.statementCount += sourceRace.statementCount || 0;
+      result.lookupStatementCount += sourceRace.statementCount || 0;
       shouldInsertSourceRun = sourceRace.shouldInsertSourceRun;
       sourceRunDuplicateWarned = sourceRace.sourceRunDuplicateWarned;
       if (sourceRace.stop) return finalizeWriteResult(result);
 
       const observationRace = await readExistingObservationRows(db, pendingRows.map((row) => row.versionKey));
       result.statementCount += observationRace.statementCount;
+      result.lookupStatementCount += observationRace.statementCount;
       if (observationRace.error) {
         result.errors.push(observationRace.error);
         return finalizeWriteResult(result);
@@ -554,11 +635,23 @@ async function readExistingObservationRows(db, versionKeys) {
   const rowsByVersionKey = new Map();
   let statementCount = 0;
   if (!versionKeys.length) return { rowsByVersionKey, statementCount };
-  for (const chunk of chunkValues(versionKeys, D1_MAX_BOUND_PARAMS_PER_STATEMENT)) {
-    const placeholders = chunk.map(() => "?").join(", ");
-    const sql = `SELECT version_key, normalized_json FROM ${OBSERVATION_TABLE} WHERE version_key IN (${placeholders})`;
+  let chunks;
+  try {
+    chunks = chunkJsonValuesByByteSize([...new Set(versionKeys)].sort());
+  } catch (error) {
+    return { rowsByVersionKey, statementCount, error: `observation lookup payload failed: ${error.message}` };
+  }
+  for (const chunk of chunks) {
+    const sql = `
+      SELECT version_key, normalized_json
+      FROM ${OBSERVATION_TABLE}
+      WHERE version_key IN (
+        SELECT CAST(value AS TEXT)
+        FROM json_each(?)
+      )
+    `;
     try {
-      const rows = await db.prepare(sql).bind(...chunk).all();
+      const rows = await db.prepare(sql).bind(chunk.payload).all();
       statementCount += 1;
       for (const row of rows?.results || []) rowsByVersionKey.set(row.version_key, row);
     } catch (error) {
@@ -573,8 +666,14 @@ function sourceRunInsertStatement(db, row) {
 }
 
 function observationInsertStatements(db, rows) {
-  return chunkRowsForHydroCoastalBoundLimit(rows, OBSERVATION_COLUMNS.length)
-    .map((chunk) => db.prepare(insertSql(OBSERVATION_TABLE, OBSERVATION_COLUMNS, chunk.length)).bind(...chunk.flatMap(observationParams)));
+  const chunks = chunkHydroCoastalRowsByJsonByteSize(rows);
+  const statements = chunks.map((chunk) => buildHydroCoastalBulkInsertStatement(db, chunk.rows).statement);
+  return {
+    statements,
+    chunkCount: chunks.length,
+    totalPayloadBytes: chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0),
+    maximumPayloadChunkBytes: chunks.reduce((max, chunk) => Math.max(max, chunk.byteLength), 0)
+  };
 }
 
 async function classifySourceRunRace(db, prepared, result, sourceRunDuplicateWarned) {
@@ -689,6 +788,30 @@ function observationParams(row) {
   ];
 }
 
+function bulkObservationInsertSql() {
+  return `
+    INSERT INTO ${OBSERVATION_TABLE} (${OBSERVATION_COLUMNS.join(", ")})
+    SELECT
+      json_extract(value, '$.versionKey'),
+      json_extract(value, '$.identityKey'),
+      json_extract(value, '$.sourceRunId'),
+      json_extract(value, '$.providerId'),
+      json_extract(value, '$.stationId'),
+      json_extract(value, '$.metric'),
+      json_extract(value, '$.observedAt'),
+      json_extract(value, '$.collectedAt'),
+      json_extract(value, '$.forecastIssuedAt'),
+      json_extract(value, '$.value'),
+      json_extract(value, '$.unit'),
+      json_extract(value, '$.status'),
+      json_extract(value, '$.provisional'),
+      json_extract(value, '$.verticalDatumJson'),
+      json_extract(value, '$.normalizedSchemaVersion'),
+      json_extract(value, '$.normalizedJson')
+    FROM json_each(?)
+  `;
+}
+
 function insertSql(table, columns, rowCount, modifier = "") {
   const row = `(${columns.map(() => "?").join(", ")})`;
   const insertKeyword = modifier ? `INSERT ${modifier}` : "INSERT";
@@ -766,6 +889,14 @@ function chunkValues(values, maxParams) {
     chunks.push(values.slice(index, index + maxParams));
   }
   return chunks;
+}
+
+function chunkJsonValuesByByteSize(values, maxBytes = D1_JSON_PAYLOAD_MAX_BYTES) {
+  return chunkHydroCoastalRowsByJsonByteSize(values, maxBytes);
+}
+
+function utf8ByteLength(value) {
+  return TEXT_ENCODER.encode(value).byteLength;
 }
 
 function finalizeWriteResult(result) {
