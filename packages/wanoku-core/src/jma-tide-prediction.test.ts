@@ -154,9 +154,36 @@ describe("JMA Tide Prediction Fixed-Width Parser v1", () => {
     expect(result.dailyRecords[0].lowTides).toEqual([]);
   });
 
+  it("parses JMA extrema times as two-character hour and minute fields", () => {
+    const result = parseJmaTidePredictionFixedWidth(buildJmaLine({
+      high: [
+        { time: " 4 8", level: 125 },
+        { time: "10 2", level: 134 }
+      ],
+      low: [
+        { time: "23 9", level: 45 },
+        { time: "0630", level: 56 }
+      ]
+    }), context());
+
+    expect(result.errors).toEqual([]);
+    expect(result.dailyRecords[0].highTides).toEqual([
+      { kind: "high", localTime: "04:08", levelCm: 125 },
+      { kind: "high", localTime: "10:02", levelCm: 134 }
+    ]);
+    expect(result.dailyRecords[0].lowTides).toEqual([
+      { kind: "low", localTime: "23:09", levelCm: 45 },
+      { kind: "low", localTime: "06:30", levelCm: 56 }
+    ]);
+  });
+
   it("rejects partial extrema sentinels and invalid HHMM", () => {
     expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ high: [{ time: "9999", level: 100 }] }), context()).errors).toContain("line 1 high tide slot 1: partial sentinel is invalid.");
     expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ high: [{ time: "2460", level: 100 }] }), context()).errors).toContain('line 1 high tide slot 1: invalid HHMM "2460".');
+    expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ high: [{ time: "24 0", level: 100 }] }), context()).errors).toContain('line 1 high tide slot 1: invalid HHMM "24 0".');
+    expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ high: [{ time: "1260", level: 100 }] }), context()).errors).toContain('line 1 high tide slot 1: invalid HHMM "1260".');
+    expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ high: [{ time: "0 30", level: 100 }] }), context()).errors).toContain('line 1 high tide slot 1: invalid HHMM "0 30".');
+    expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ high: [{ time: "    ", level: 100 }] }), context()).errors).toContain('line 1 high tide slot 1: invalid HHMM "    ".');
   });
 
   it("requires caller supplied forecastIssuedAt and does not fabricate it from collectedAt", () => {

@@ -335,8 +335,8 @@ function annualJmaBody(station) {
 function jmaLine(station, { month = 1, day = 1, startLevel = 100 } = {}) {
   const hourly = Array.from({ length: 24 }, (_, hour) => String(startLevel + hour).padStart(3, " ")).join("");
   const date = `26${String(month).padStart(2, " ")}${String(day).padStart(2, " ")}`;
-  const highTides = ["0130123", "1410134", "9999999", "9999999"].join("");
-  const lowTides = ["0720 45", "2000 56", "9999999", "9999999"].join("");
+  const highTides = [" 4 8123", "10 2134", "9999999", "9999999"].join("");
+  const lowTides = ["23 9 45", "0630 56", "9999999", "9999999"].join("");
   const line = `${hourly}${date}${station}${highTides}${lowTides}`;
   expect(line).toHaveLength(JMA_TIDE_PREDICTION_LINE_LENGTH);
   return line;

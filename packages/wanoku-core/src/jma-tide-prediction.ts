@@ -15,7 +15,7 @@ import {
 export const JMA_TIDE_PREDICTION_PROVIDER_ID = "jma-tide-prediction";
 export const JMA_TIDE_PREDICTION_SOURCE_FORMAT_VERSION = "jma-tide-prediction-fixed-width-136.v1";
 export const JMA_TIDE_PREDICTION_PARSER_ID = "wanoku-jma-tide-prediction-fixed-width";
-export const JMA_TIDE_PREDICTION_PARSER_VERSION = "1.0.0";
+export const JMA_TIDE_PREDICTION_PARSER_VERSION = "1.0.1";
 export const JMA_TIDE_PREDICTION_LINE_LENGTH = 136;
 
 export type JmaTidePredictionParseContext = {
@@ -400,13 +400,18 @@ function parseUnsignedIntegerField(field: string): number | null {
 }
 
 function parseJmaTimeField(field: string): string | null {
-  const trimmed = field.trim();
-  if (!/^\d{1,4}$/.test(trimmed)) return null;
-  const padded = trimmed.padStart(4, "0");
-  const hour = Number.parseInt(padded.slice(0, 2), 10);
-  const minute = Number.parseInt(padded.slice(2, 4), 10);
+  if (field.length !== 4) return null;
+  const hourField = field.slice(0, 2);
+  const minuteField = field.slice(2, 4);
+  if (!isJmaTwoCharacterTimeNumber(hourField) || !isJmaTwoCharacterTimeNumber(minuteField)) return null;
+  const hour = Number.parseInt(hourField.trim(), 10);
+  const minute = Number.parseInt(minuteField.trim(), 10);
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return `${pad2(hour)}:${pad2(minute)}`;
+}
+
+function isJmaTwoCharacterTimeNumber(field: string): boolean {
+  return /^(?: \d|\d{2})$/.test(field);
 }
 
 function jstDateTimeToUtcIso(year: number, month: number, day: number, hour: number, minute: number): string {
