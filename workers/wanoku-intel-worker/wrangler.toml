@@ -5,9 +5,6 @@ compatibility_date = "2026-07-01"
 workers_dev = true
 preview_urls = false
 
-[limits]
-cpu_ms = 120_000
-
 [observability]
 enabled = true
 head_sampling_rate = 1
