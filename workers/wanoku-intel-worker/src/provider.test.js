@@ -813,6 +813,58 @@ describe("wanoku intel worker environmental providers", () => {
     expect(JSON.stringify(body)).not.toContain("test-secret");
   });
 
+  it("collects one JMA tide prediction station through the protected admin route at monthly execution scale", async () => {
+    const db = new HydroD1();
+    const sourceText = annualJmaBody("KZ");
+    const sourceByteLength = new TextEncoder().encode(sourceText).byteLength;
+    let bodyReadCount = 0;
+    vi.stubGlobal("fetch", async () => responseFromText(sourceText, { onArrayBuffer: () => { bodyReadCount += 1; } }));
+
+    const response = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test-secret"
+      },
+      body: JSON.stringify({
+        stationId: "KZ",
+        sourceYear: 2026,
+        forecastIssuedAt: "2025-12-30T00:00:00.000Z",
+        sourceMonth: 1,
+        acquisitionAt: "2025-12-30T12:00:00.000Z"
+      })
+    }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: db
+    });
+    vi.unstubAllGlobals();
+
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      status: "ok",
+      stationId: "KZ",
+      sourceYear: 2026,
+      executionScope: "monthly",
+      sourceMonth: 1,
+      acquisitionAt: "2025-12-30T12:00:00.000Z",
+      sourceUrl: "https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/2026/KZ.txt",
+      sourceByteLength,
+      parsedObservationCount: 744
+    });
+    expect(body.persistence).toMatchObject({
+      ok: true,
+      insertedCount: 744,
+      queryBudgetExceeded: false
+    });
+    expect(bodyReadCount).toBe(1);
+    expect(db.sourceRuns.size).toBe(1);
+    expect(db.observations.size).toBe(744);
+    expect(JSON.stringify(body)).not.toContain(sourceText.slice(0, 100));
+    expect(JSON.stringify(body)).not.toContain("test-secret");
+  });
+
   it("validates the JMA tide prediction admin route before any fetch", async () => {
     const invalidRequests = [
       new Request("https://worker.example/admin/collect-jma-tide-prediction", {
@@ -858,6 +910,41 @@ describe("wanoku intel worker environmental providers", () => {
       new Request("https://worker.example/admin/collect-jma-tide-prediction", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceMonth: 0, acquisitionAt: "2025-12-30T12:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceMonth: 13, acquisitionAt: "2025-12-30T12:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceMonth: 1.5, acquisitionAt: "2025-12-30T12:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceMonth: "1", acquisitionAt: "2025-12-30T12:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceMonth: 1 })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", acquisitionAt: "2025-12-30T12:00:00.000Z" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
+        body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", sourceMonth: 1, acquisitionAt: "2025-12-30T12:00:00.000Z", expectedRawHash: "ABC" })
+      }),
+      new Request("https://worker.example/admin/collect-jma-tide-prediction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer test-secret" },
         body: JSON.stringify({ stationId: "TK", sourceYear: 2026, forecastIssuedAt: "2025-12-30T00:00:00.000Z", extra: "nope" })
       })
     ];
@@ -889,11 +976,24 @@ describe("wanoku intel worker environmental providers", () => {
   });
 
   it("maps JMA tide prediction admin auth, upstream, partial, and persistence failures safely", async () => {
+    let unauthorizedBodyRead = false;
     const unauthorized = await worker.fetch(new Request("https://worker.example/admin/collect-jma-tide-prediction", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}"
     }), {
+      WANOKU_ADMIN_SECRET: "test-secret",
+      WANOKU_INTEL_D1: new HydroD1()
+    });
+    const unauthorizedUnreadableBody = await worker.fetch({
+      method: "POST",
+      url: "https://worker.example/admin/collect-jma-tide-prediction",
+      headers: new Headers({ "Content-Type": "application/json" }),
+      text: async () => {
+        unauthorizedBodyRead = true;
+        throw new Error("body must not be read before auth");
+      }
+    }, {
       WANOKU_ADMIN_SECRET: "test-secret",
       WANOKU_INTEL_D1: new HydroD1()
     });
@@ -921,6 +1021,8 @@ describe("wanoku intel worker environmental providers", () => {
     vi.unstubAllGlobals();
 
     expect(unauthorized.status).toBe(403);
+    expect(unauthorizedUnreadableBody.status).toBe(403);
+    expect(unauthorizedBodyRead).toBe(false);
     expect(missingSecret.status).toBe(503);
     expect(wrongMethod.status).toBe(405);
     expect(upstream.status).toBe(502);

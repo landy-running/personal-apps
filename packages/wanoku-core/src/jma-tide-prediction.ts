@@ -52,6 +52,17 @@ export type JmaTidePredictionParseResult = HydroCoastalParseResult & {
   observationCount: number;
 };
 
+export type JmaTidePredictionMonthSliceResult = {
+  text: string;
+  sourceYear: number;
+  sourceMonth: number;
+  expectedLineCount: number;
+  selectedLineCount: number;
+  inputLineCount: number;
+  errors: string[];
+  warnings: string[];
+};
+
 type ParsedLine = {
   rawLine: string;
   record: JmaTidePredictionDailyRecord;
@@ -183,6 +194,68 @@ export function parseJmaTidePredictionFixedWidth(input: unknown, context: JmaTid
 
 export function decimalDegreesFromDegreesMinutes(degrees: number, minutes: number): number {
   return Math.round((degrees + minutes / 60) * 1_000_000) / 1_000_000;
+}
+
+export function daysInMonth(year: number, month: number): number {
+  if (!Number.isInteger(year) || year < 1000 || year > 9999) return 0;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return 0;
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+export function readJmaTidePredictionFixedWidthLineSourceMonth(line: string): number | null {
+  if (typeof line !== "string" || line.length !== JMA_TIDE_PREDICTION_LINE_LENGTH) return null;
+  const month = parseUnsignedIntegerField(line.slice(74, 76));
+  if (month == null) return null;
+  return Number.isInteger(month) && month >= 1 && month <= 12 ? month : null;
+}
+
+export function sliceJmaTidePredictionFixedWidthBySourceMonth(
+  input: unknown,
+  options: { sourceYear: number; sourceMonth: number }
+): JmaTidePredictionMonthSliceResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const sourceYear = options.sourceYear;
+  const sourceMonth = options.sourceMonth;
+  const expectedLineCount = daysInMonth(sourceYear, sourceMonth);
+  const selectedLines: string[] = [];
+
+  if (typeof input !== "string") {
+    errors.push("input must be a string.");
+    return monthSliceResult({ text: "", sourceYear, sourceMonth, expectedLineCount, selectedLineCount: 0, inputLineCount: 0, errors, warnings });
+  }
+  if (!Number.isInteger(sourceYear) || sourceYear < 1000 || sourceYear > 9999) errors.push("sourceYear must be a four-digit integer.");
+  if (!Number.isInteger(sourceMonth) || sourceMonth < 1 || sourceMonth > 12) errors.push("sourceMonth must be an integer from 1 to 12.");
+
+  const rawLines = normalizeInputLines(input);
+  if (errors.length) {
+    return monthSliceResult({ text: "", sourceYear, sourceMonth, expectedLineCount, selectedLineCount: 0, inputLineCount: rawLines.length, errors, warnings });
+  }
+
+  for (const rawLine of rawLines) {
+    if (rawLine.content.length === 0) continue;
+    if (rawLine.content.length !== JMA_TIDE_PREDICTION_LINE_LENGTH) {
+      errors.push(`line ${rawLine.lineNumber}: expected ${JMA_TIDE_PREDICTION_LINE_LENGTH} characters, got ${rawLine.content.length}.`);
+      continue;
+    }
+    const lineMonth = readJmaTidePredictionFixedWidthLineSourceMonth(rawLine.content);
+    if (lineMonth == null) {
+      errors.push(`line ${rawLine.lineNumber}: invalid month field "${rawLine.content.slice(74, 76)}".`);
+      continue;
+    }
+    if (lineMonth === sourceMonth) selectedLines.push(rawLine.content);
+  }
+
+  return monthSliceResult({
+    text: selectedLines.join("\n"),
+    sourceYear,
+    sourceMonth,
+    expectedLineCount,
+    selectedLineCount: selectedLines.length,
+    inputLineCount: rawLines.length,
+    errors,
+    warnings
+  });
 }
 
 function parseLine(line: string, lineNumber: number, sourceYear: number): ParseLineResult {
@@ -385,6 +458,14 @@ function normalizeInputLines(input: string): Array<{ content: string; lineNumber
 
 function countInputLines(input: string): number {
   return normalizeInputLines(input).length;
+}
+
+function monthSliceResult(input: JmaTidePredictionMonthSliceResult): JmaTidePredictionMonthSliceResult {
+  return {
+    ...input,
+    errors: Array.from(new Set(input.errors)),
+    warnings: Array.from(new Set(input.warnings))
+  };
 }
 
 function parseSignedIntegerField(field: string): number | null {

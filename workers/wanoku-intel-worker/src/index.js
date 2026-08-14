@@ -1287,6 +1287,9 @@ async function handleCollectJmaTidePrediction(request, env) {
       db: env.WANOKU_INTEL_D1,
       sourceUrl: catalog.source.sourceUrl,
       sourceYear: catalog.source.sourceYear,
+      sourceMonth: validation.body.sourceMonth,
+      acquisitionAt: validation.body.acquisitionAt,
+      expectedRawHash: validation.body.expectedRawHash,
       forecastIssuedAt: validation.body.forecastIssuedAt,
       sourceName: catalog.source.sourceName,
       attribution: catalog.source.attribution
@@ -1333,7 +1336,7 @@ async function readAdminJsonBody(request, maxBytes) {
 }
 
 function validateJmaTidePredictionAdminBody(body) {
-  const allowed = new Set(["stationId", "sourceYear", "forecastIssuedAt"]);
+  const allowed = new Set(["stationId", "sourceYear", "forecastIssuedAt", "sourceMonth", "acquisitionAt", "expectedRawHash"]);
   const errors = [];
   for (const key of Object.keys(body)) {
     if (!allowed.has(key)) errors.push(`unsupported field: ${key}`);
@@ -1341,12 +1344,29 @@ function validateJmaTidePredictionAdminBody(body) {
   if (typeof body.stationId !== "string" || body.stationId.trim() === "") errors.push("stationId is required.");
   if (!Number.isInteger(body.sourceYear)) errors.push("sourceYear is required and must be an integer.");
   if (!isCanonicalUtcIsoDateTime(body.forecastIssuedAt)) errors.push("forecastIssuedAt is required and must be canonical UTC ISO datetime.");
+  const hasSourceMonth = body.sourceMonth != null;
+  const hasAcquisitionAt = body.acquisitionAt != null;
+  const hasExpectedRawHash = body.expectedRawHash != null;
+  if (hasSourceMonth !== hasAcquisitionAt) errors.push("sourceMonth and acquisitionAt must be provided together.");
+  if (hasSourceMonth && (!Number.isInteger(body.sourceMonth) || body.sourceMonth < 1 || body.sourceMonth > 12)) {
+    errors.push("sourceMonth must be an integer from 1 to 12.");
+  }
+  if (hasAcquisitionAt && !isCanonicalUtcIsoDateTime(body.acquisitionAt)) errors.push("acquisitionAt must be canonical UTC ISO datetime.");
+  if (hasExpectedRawHash) {
+    if (!hasSourceMonth || !hasAcquisitionAt) errors.push("expectedRawHash requires sourceMonth and acquisitionAt.");
+    if (typeof body.expectedRawHash !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedRawHash)) {
+      errors.push("expectedRawHash must be a lowercase SHA-256 64-character hex string.");
+    }
+  }
   return {
     ok: errors.length === 0,
     body: {
       stationId: body.stationId,
       sourceYear: body.sourceYear,
-      forecastIssuedAt: body.forecastIssuedAt
+      forecastIssuedAt: body.forecastIssuedAt,
+      sourceMonth: hasSourceMonth ? body.sourceMonth : undefined,
+      acquisitionAt: hasAcquisitionAt ? body.acquisitionAt : undefined,
+      expectedRawHash: hasExpectedRawHash ? body.expectedRawHash : undefined
     },
     errors
   };
@@ -1357,9 +1377,11 @@ function httpStatusForJmaTidePredictionIngestion(result) {
   if (result?.status === "ok" && result?.persistence?.ok === true && result?.ok === true) return 200;
   const errorCodes = new Set((result?.errors || []).map((item) => item?.code).filter(Boolean));
   if (errorCodes.has("invalid_input")) return 400;
+  if (errorCodes.has("raw_hash_mismatch")) return 409;
   if (errorCodes.has("fetch_error") || errorCodes.has("http_error") || errorCodes.has("body_read_error") || errorCodes.has("empty_body") || errorCodes.has("decode_error") || errorCodes.has("parse_failed") || errorCodes.has("no_observations")) {
     return 502;
   }
+  if (errorCodes.has("month_completeness_error")) return 502;
   if (errorCodes.has("persistence_error") || result?.persistence?.ok === false) return 500;
   return 500;
 }
@@ -1370,6 +1392,9 @@ function sanitizeJmaTidePredictionIngestionResponse(result, source) {
     status: result?.status || "failed",
     stationId: source.stationId,
     sourceYear: source.sourceYear,
+    executionScope: result?.executionScope || "annual",
+    sourceMonth: result?.sourceMonth ?? null,
+    acquisitionAt: result?.acquisitionAt ?? null,
     sourceRunId: result?.sourceRunId ?? null,
     sourceUrl: source.sourceUrl,
     requestedAt: result?.requestedAt ?? null,

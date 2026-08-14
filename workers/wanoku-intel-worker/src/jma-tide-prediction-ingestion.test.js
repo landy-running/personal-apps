@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  HYDRO_COASTAL_SCHEMA_VERSION
+  HYDRO_COASTAL_SCHEMA_VERSION,
+  hydroCoastalObservationIdentityKey
 } from "../../../packages/wanoku-core/src/hydro-coastal.ts";
 import {
   JMA_TIDE_PREDICTION_LINE_LENGTH,
@@ -18,6 +19,7 @@ const SOURCE_YEAR = 2026;
 const FORECAST_ISSUED_AT = "2025-12-30T00:00:00.000Z";
 const REQUESTED_AT = "2025-12-31T00:00:00.000Z";
 const COMPLETED_AT = "2025-12-31T00:00:03.000Z";
+const ACQUISITION_AT = "2025-12-30T12:00:00.000Z";
 
 describe("JMA Tide Prediction Ingestion Orchestrator", () => {
   it("fetches exact bytes, hashes before parsing, parses 120 observations, and persists an ok source run", async () => {
@@ -90,6 +92,161 @@ describe("JMA Tide Prediction Ingestion Orchestrator", () => {
     expect(db.statements.every((statement) => statement.params.length <= 100)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(sourceText.slice(0, 100));
     expect([...db.sourceRuns.values()][0].run_json).not.toContain(sourceText.slice(0, 100));
+  });
+
+  it("ingests monthly execution slices from the full annual artifact without adding month to observation identity", async () => {
+    const sourceText = annualStationBody("KZ");
+    const sourceBytes = bytesFromText(sourceText);
+    const expectedHash = await sha256HexFromBytes(sourceBytes);
+    const cases = [
+      { sourceMonth: 1, expectedObservations: 744 },
+      { sourceMonth: 2, expectedObservations: 672 },
+      { sourceMonth: 4, expectedObservations: 720 },
+      { sourceMonth: 12, expectedObservations: 744 }
+    ];
+
+    for (const { sourceMonth, expectedObservations } of cases) {
+      const db = new MockD1Database();
+      const result = await ingestJmaTidePredictionSource({
+        ...baseInput(db),
+        sourceMonth,
+        acquisitionAt: ACQUISITION_AT,
+        expectedRawHash: expectedHash,
+        fetchImpl: async () => responseFromBytes(sourceBytes),
+        now: nowSequence([REQUESTED_AT, COMPLETED_AT])
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe("ok");
+      expect(result.executionScope).toBe("monthly");
+      expect(result.sourceMonth).toBe(sourceMonth);
+      expect(result.acquisitionAt).toBe(ACQUISITION_AT);
+      expect(result.rawHash).toBe(expectedHash);
+      expect(result.sourceByteLength).toBe(sourceBytes.byteLength);
+      expect(result.parsedObservationCount).toBe(expectedObservations);
+      expect(result.persistence).toMatchObject({ ok: true, insertedCount: expectedObservations });
+      expect(result.sourceRunId).toContain(`:m${String(sourceMonth).padStart(2, "0")}:`);
+      expect(db.observations.size).toBe(expectedObservations);
+
+      const observations = [...db.observations.values()].map((row) => JSON.parse(row.normalized_json));
+      expect(observations.every((observation) => observation.collectedAt === ACQUISITION_AT)).toBe(true);
+      expect(observations.every((observation) => observation.provenance.normalizedAt === ACQUISITION_AT)).toBe(true);
+      expect(observations.every((observation) => observation.provenance.sourceTimestamp.startsWith(`2026-${String(sourceMonth).padStart(2, "0")}-`))).toBe(true);
+      const firstRow = [...db.observations.values()][0];
+      const firstObservation = observations[0];
+      expect(firstRow.identity_key).toBe(hydroCoastalObservationIdentityKey(firstObservation));
+      expect(firstRow.identity_key.split("|")).toHaveLength(5);
+      expect(firstRow.identity_key).not.toContain("sourceMonth");
+    }
+  });
+
+  it("rejects invalid monthly execution input before fetch or persistence", async () => {
+    const invalidInputs = [
+      { sourceMonth: 0, acquisitionAt: ACQUISITION_AT },
+      { sourceMonth: 13, acquisitionAt: ACQUISITION_AT },
+      { sourceMonth: 1.5, acquisitionAt: ACQUISITION_AT },
+      { sourceMonth: "1", acquisitionAt: ACQUISITION_AT },
+      { sourceMonth: 1 },
+      { acquisitionAt: ACQUISITION_AT },
+      { sourceMonth: 1, acquisitionAt: ACQUISITION_AT, expectedRawHash: "ABC" },
+      { expectedRawHash: "0".repeat(64) }
+    ];
+
+    for (const invalid of invalidInputs) {
+      const db = new MockD1Database();
+      let fetchCalled = false;
+      const result = await ingestJmaTidePredictionSource({
+        ...baseInput(db),
+        ...invalid,
+        fetchImpl: async () => {
+          fetchCalled = true;
+          return responseFromText(jmaLine());
+        }
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.errors.map((item) => item.code)).toContain("invalid_input");
+      expect(fetchCalled).toBe(false);
+      expect(db.sourceRuns.size).toBe(0);
+      expect(db.observations.size).toBe(0);
+    }
+  });
+
+  it("stops before parser and persistence when expectedRawHash does not match the full annual artifact", async () => {
+    const db = new MockD1Database();
+    const sourceBytes = bytesFromText(annualStationBody("TK"));
+    let parseCalled = false;
+    let persistenceCalled = false;
+    const result = await ingestJmaTidePredictionSource({
+      ...baseInput(db),
+      sourceMonth: 1,
+      acquisitionAt: ACQUISITION_AT,
+      expectedRawHash: "0".repeat(64),
+      fetchImpl: async () => responseFromBytes(sourceBytes),
+      parseImpl: () => {
+        parseCalled = true;
+        return {};
+      },
+      persistenceImpl: async () => {
+        persistenceCalled = true;
+        return { ok: true };
+      },
+      now: nowSequence([REQUESTED_AT, COMPLETED_AT])
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.rawHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.sourceByteLength).toBe(sourceBytes.byteLength);
+    expect(result.errors.map((item) => item.code)).toContain("raw_hash_mismatch");
+    expect(parseCalled).toBe(false);
+    expect(persistenceCalled).toBe(false);
+    expect(result.persistence).toBeNull();
+    expect(db.sourceRuns.size).toBe(0);
+    expect(db.observations.size).toBe(0);
+  });
+
+  it("does not write monthly executions when daily-line count, parser errors, or observation count fail completeness", async () => {
+    const sourceLines = annualStationBody("TK").split("\n");
+    const missingJanLine = sourceLines.slice(1).join("\n");
+    const parserErrorLines = [...sourceLines];
+    parserErrorLines[0] = jmaLineWithFirstHourlyField("S3!");
+    const parserErrorText = parserErrorLines.join("\n");
+    const malformedParserText = annualStationBody("TK");
+    const cases = [
+      { text: missingJanLine, expectedCode: "month_completeness_error" },
+      { text: parserErrorText, expectedCode: "parse_failed" },
+      {
+        text: malformedParserText,
+        expectedCode: "month_completeness_error",
+        parseImpl: (text, context) => ({
+          ...parseJmaTidePredictionFixedWidth(text, context),
+          observations: []
+        })
+      }
+    ];
+
+    for (const testCase of cases) {
+      const db = new MockD1Database();
+      let persistenceCalled = false;
+      const result = await ingestJmaTidePredictionSource({
+        ...baseInput(db),
+        sourceMonth: 1,
+        acquisitionAt: ACQUISITION_AT,
+        fetchImpl: async () => responseFromText(testCase.text),
+        parseImpl: testCase.parseImpl,
+        persistenceImpl: async () => {
+          persistenceCalled = true;
+          return { ok: true };
+        },
+        now: nowSequence([REQUESTED_AT, COMPLETED_AT])
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.errors.map((item) => item.code)).toContain(testCase.expectedCode);
+      expect(persistenceCalled).toBe(false);
+      expect(db.sourceRuns.size).toBe(0);
+      expect(db.observations.size).toBe(0);
+    }
   });
 
   it("computes SHA-256 from raw bytes as lowercase hexadecimal", async () => {

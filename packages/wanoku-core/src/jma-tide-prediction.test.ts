@@ -8,9 +8,12 @@ import {
 import {
   JMA_TIDE_PREDICTION_LINE_LENGTH,
   JMA_TIDE_PREDICTION_STATIONS_2026,
+  daysInMonth,
   decimalDegreesFromDegreesMinutes,
   getJmaTidePredictionProviderDefinition,
   parseJmaTidePredictionFixedWidth,
+  readJmaTidePredictionFixedWidthLineSourceMonth,
+  sliceJmaTidePredictionFixedWidthBySourceMonth,
   type JmaTidePredictionParseContext
 } from "./jma-tide-prediction";
 
@@ -69,6 +72,25 @@ describe("JMA Tide Prediction Fixed-Width Parser v1", () => {
   it("validates YY against sourceYear and rejects nonexistent dates", () => {
     expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ yy: "25" }), context()).errors).toContain("line 1: YY 25 does not match sourceYear 2026.");
     expect(parseJmaTidePredictionFixedWidth(buildJmaLine({ month: " 2", day: "30" }), context()).errors).toContain("line 1: nonexistent local date 2026-02-30.");
+  });
+
+  it("reads and slices sourceMonth at the daily-line level before observation expansion", () => {
+    const jan = buildJmaLine({ month: " 1", day: "31" });
+    const feb = buildJmaLine({ month: " 2", day: " 1" });
+    const dec = buildJmaLine({ month: "12", day: "31" });
+    const sliced = sliceJmaTidePredictionFixedWidthBySourceMonth(`${jan}\n${feb}\n${dec}`, {
+      sourceYear: 2026,
+      sourceMonth: 2
+    });
+
+    expect(readJmaTidePredictionFixedWidthLineSourceMonth(jan)).toBe(1);
+    expect(readJmaTidePredictionFixedWidthLineSourceMonth(dec)).toBe(12);
+    expect(daysInMonth(2026, 2)).toBe(28);
+    expect(sliced.errors).toEqual([]);
+    expect(sliced.inputLineCount).toBe(3);
+    expect(sliced.selectedLineCount).toBe(1);
+    expect(sliced.expectedLineCount).toBe(28);
+    expect(sliced.text).toBe(feb);
   });
 
   it("accepts leap day when sourceYear is leap year", () => {

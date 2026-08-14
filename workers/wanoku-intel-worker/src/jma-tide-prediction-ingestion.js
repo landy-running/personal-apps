@@ -7,8 +7,10 @@ import {
   JMA_TIDE_PREDICTION_PROVIDER_ID,
   JMA_TIDE_PREDICTION_SOURCE_FORMAT_VERSION,
   JMA_TIDE_PREDICTION_STATIONS_2026,
+  daysInMonth,
   getJmaTidePredictionProviderDefinition,
-  parseJmaTidePredictionFixedWidth
+  parseJmaTidePredictionFixedWidth,
+  sliceJmaTidePredictionFixedWidthBySourceMonth
 } from "../../../packages/wanoku-core/src/jma-tide-prediction.ts";
 import { writeHydroCoastalBatch } from "./hydro-coastal-persistence.js";
 
@@ -21,12 +23,15 @@ export const JMA_TIDE_PREDICTION_ERROR_CODES = [
   "body_read_error",
   "empty_body",
   "decode_error",
+  "raw_hash_mismatch",
   "parse_failed",
+  "month_completeness_error",
   "no_observations",
   "persistence_error"
 ];
 
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const LOWERCASE_SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export async function ingestJmaTidePredictionSource(input = {}) {
   const diagnostics = createDiagnostics();
@@ -37,6 +42,9 @@ export async function ingestJmaTidePredictionSource(input = {}) {
     sourceRunId: null,
     sourceUrl: safeSourceUrlForResult(input.sourceUrl),
     sourceYear: input.sourceYear ?? null,
+    executionScope: input.sourceMonth == null ? "annual" : "monthly",
+    sourceMonth: input.sourceMonth ?? null,
+    acquisitionAt: input.acquisitionAt ?? null,
     requestedAt: null,
     completedAt: null,
     forecastIssuedAt: input.forecastIssuedAt ?? null,
@@ -62,6 +70,10 @@ export async function ingestJmaTidePredictionSource(input = {}) {
   const persistenceImpl = input.persistenceImpl ?? writeHydroCoastalBatch;
   const sourceUrl = normalizeSourceUrl(input.sourceUrl);
   const sourceYear = input.sourceYear;
+  const sourceMonth = input.sourceMonth ?? null;
+  const monthlyExecution = sourceMonth != null;
+  const acquisitionAt = input.acquisitionAt ?? null;
+  const expectedRawHash = input.expectedRawHash ?? null;
   const forecastIssuedAt = input.forecastIssuedAt;
   const sourceName = input.sourceName ?? "Japan Meteorological Agency tide table";
   const attribution = input.attribution ?? "Source: Japan Meteorological Agency. Normalized and processed by Wanoku.";
@@ -204,7 +216,7 @@ export async function ingestJmaTidePredictionSource(input = {}) {
   } catch (error) {
     hashDiagnostics.push(diagnostic("fetch_error", `raw byte SHA-256 failed: ${safeErrorMessage(error)}`));
   }
-  if (rawHash != null && !/^[0-9a-f]{64}$/.test(rawHash)) {
+  if (rawHash != null && !LOWERCASE_SHA256_HEX.test(rawHash)) {
     hashDiagnostics.push(diagnostic("fetch_error", "raw byte SHA-256 must be a 64-character lowercase hex string."));
     rawHash = null;
   }
@@ -289,6 +301,11 @@ export async function ingestJmaTidePredictionSource(input = {}) {
     });
   }
 
+  if (expectedRawHash && rawHash !== expectedRawHash) {
+    diagnostics.errors.push(diagnostic("raw_hash_mismatch", "expectedRawHash does not match the fetched annual source raw hash."));
+    return finalizeIngestionResult(resultBase, diagnostics);
+  }
+
   if (bytes.byteLength === 0) {
     diagnostics.errors.push(diagnostic("empty_body", "source body is empty."));
     return persistAndFinalize({
@@ -339,14 +356,38 @@ export async function ingestJmaTidePredictionSource(input = {}) {
     });
   }
 
+  let parserInputText = decoded.text;
+  let parserCollectedAt = completedAt;
+  let parserNormalizedAt = completedAt;
+  let expectedMonthlyObservationCount = null;
+  if (monthlyExecution) {
+    const sliced = sliceJmaTidePredictionFixedWidthBySourceMonth(decoded.text, { sourceYear, sourceMonth });
+    const expectedLineCount = daysInMonth(sourceYear, sourceMonth);
+    expectedMonthlyObservationCount = expectedLineCount * 24;
+    if (sliced.errors.length) {
+      diagnostics.errors.push(...sliced.errors.map((message) => diagnostic("month_completeness_error", message)));
+      return finalizeIngestionResult(resultBase, diagnostics);
+    }
+    if (sliced.selectedLineCount !== expectedLineCount) {
+      diagnostics.errors.push(diagnostic(
+        "month_completeness_error",
+        `sourceMonth ${sourceMonth} expected ${expectedLineCount} daily lines and ${expectedMonthlyObservationCount} observations; found ${sliced.selectedLineCount} daily lines.`
+      ));
+      return finalizeIngestionResult(resultBase, diagnostics);
+    }
+    parserInputText = sliced.text;
+    parserCollectedAt = acquisitionAt;
+    parserNormalizedAt = acquisitionAt;
+  }
+
   let parsed;
   try {
-    parsed = parseImpl(decoded.text, {
+    parsed = parseImpl(parserInputText, {
       provider: getJmaTidePredictionProviderDefinition(),
       stations: JMA_TIDE_PREDICTION_STATIONS_2026,
       sourceYear,
-      collectedAt: completedAt,
-      normalizedAt: completedAt,
+      collectedAt: parserCollectedAt,
+      normalizedAt: parserNormalizedAt,
       forecastIssuedAt,
       sourceUrl,
       sourceName,
@@ -354,6 +395,7 @@ export async function ingestJmaTidePredictionSource(input = {}) {
     });
   } catch (error) {
     diagnostics.errors.push(diagnostic("parse_failed", `parser threw: ${safeErrorMessage(error)}`));
+    if (monthlyExecution) return finalizeIngestionResult(resultBase, diagnostics);
     return persistAndFinalize({
       input,
       resultBase,
@@ -380,6 +422,7 @@ export async function ingestJmaTidePredictionSource(input = {}) {
   if (!normalizedParsed.valid) {
     resultBase.parserErrorCount = normalizedParsed.parserErrorCount;
     resultBase.parserWarningCount = normalizedParsed.parserWarningCount;
+    if (monthlyExecution) return finalizeIngestionResult(resultBase, diagnostics);
     return persistAndFinalize({
       input,
       resultBase,
@@ -411,6 +454,23 @@ export async function ingestJmaTidePredictionSource(input = {}) {
   diagnostics.errors.push(...parserErrors.map((message) => diagnostic("parse_failed", sanitizeParserDiagnostic(message, "parser error redacted."))));
   diagnostics.warnings.push(...parserWarnings.map((message) => diagnostic("parser_warning", sanitizeParserDiagnostic(message, "parser warning redacted."))));
   const sourceFormatVersion = normalizeSourceFormatVersion(parsed.sourceFormatVersion, diagnostics);
+
+  if (monthlyExecution) {
+    const hasDuplicateDailyLine = parserWarnings.some((message) => typeof message === "string" && message.startsWith("duplicate JMA tide prediction daily line ignored:"));
+    if (parserErrors.length > 0 || hasDuplicateDailyLine || observations.length !== expectedMonthlyObservationCount) {
+      if (hasDuplicateDailyLine) {
+        diagnostics.errors.push(diagnostic("month_completeness_error", `sourceMonth ${sourceMonth} contains duplicate daily lines.`));
+      }
+      if (observations.length !== expectedMonthlyObservationCount) {
+        diagnostics.errors.push(diagnostic(
+          "month_completeness_error",
+          `sourceMonth ${sourceMonth} expected ${expectedMonthlyObservationCount} observations; parsed ${observations.length}.`
+        ));
+      }
+      resultBase.parsedObservationCount = observations.length;
+      return finalizeIngestionResult(resultBase, diagnostics);
+    }
+  }
 
   let status = "ok";
   let errorCode = null;
@@ -445,9 +505,10 @@ export async function ingestJmaTidePredictionSource(input = {}) {
   });
 }
 
-export function defaultJmaTidePredictionRunId({ providerId = JMA_TIDE_PREDICTION_PROVIDER_ID, sourceYear, requestedAt, rawHash }) {
+export function defaultJmaTidePredictionRunId({ providerId = JMA_TIDE_PREDICTION_PROVIDER_ID, sourceYear, sourceMonth, requestedAt, rawHash }) {
   const hashPart = typeof rawHash === "string" && rawHash.length > 0 ? rawHash.slice(0, 16) : "nohash";
-  return `${providerId}:${sourceYear}:${requestedAt}:${hashPart}`;
+  const monthPart = Number.isInteger(sourceMonth) ? `:m${String(sourceMonth).padStart(2, "0")}` : "";
+  return `${providerId}:${sourceYear}${monthPart}:${requestedAt}:${hashPart}`;
 }
 
 export async function sha256HexFromBytes(bytes, cryptoImpl = globalThis.crypto) {
@@ -501,6 +562,26 @@ function validateIngestionInput(input) {
   }
   if (!isCanonicalUtcIsoDateTime(input.forecastIssuedAt)) {
     errors.push(diagnostic("invalid_input", "forecastIssuedAt must be caller supplied canonical UTC ISO datetime."));
+  }
+  const hasSourceMonth = input.sourceMonth != null;
+  const hasAcquisitionAt = input.acquisitionAt != null;
+  const hasExpectedRawHash = input.expectedRawHash != null;
+  if (hasSourceMonth !== hasAcquisitionAt) {
+    errors.push(diagnostic("invalid_input", "sourceMonth and acquisitionAt must be provided together for monthly execution."));
+  }
+  if (hasSourceMonth && (!Number.isInteger(input.sourceMonth) || input.sourceMonth < 1 || input.sourceMonth > 12)) {
+    errors.push(diagnostic("invalid_input", "sourceMonth must be an integer from 1 to 12."));
+  }
+  if (hasAcquisitionAt && !isCanonicalUtcIsoDateTime(input.acquisitionAt)) {
+    errors.push(diagnostic("invalid_input", "acquisitionAt must be canonical UTC ISO datetime."));
+  }
+  if (hasExpectedRawHash) {
+    if (!hasSourceMonth || !hasAcquisitionAt) {
+      errors.push(diagnostic("invalid_input", "expectedRawHash requires monthly execution with sourceMonth and acquisitionAt."));
+    }
+    if (typeof input.expectedRawHash !== "string" || !LOWERCASE_SHA256_HEX.test(input.expectedRawHash)) {
+      errors.push(diagnostic("invalid_input", "expectedRawHash must be a lowercase SHA-256 64-character hex string when provided."));
+    }
   }
   if (input.fetchImpl != null && typeof input.fetchImpl !== "function") errors.push(diagnostic("invalid_input", "fetchImpl must be a function when provided."));
   if (input.now != null && typeof input.now !== "function") errors.push(diagnostic("invalid_input", "now must be a function when provided."));
@@ -657,6 +738,7 @@ async function persistAndFinalize({
     sourceRunId = runIdFactory({
       providerId: JMA_TIDE_PREDICTION_PROVIDER_ID,
       sourceYear: input.sourceYear,
+      sourceMonth: input.sourceMonth,
       requestedAt: sourceRunInput.requestedAt,
       rawHash: rawHashForRunId
     });
