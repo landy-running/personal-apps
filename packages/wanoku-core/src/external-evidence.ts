@@ -38,8 +38,11 @@ export const SEABASS_EXTERNAL_EVIDENCE_MAPPING_METHODS = [
 export const SEABASS_EXTERNAL_EVIDENCE_MAPPING_STATUSES = ["exact", "approximate", "unknown"] as const;
 export const SEABASS_EXTERNAL_EVIDENCE_QUALITY_FLAGS = [
   "event-time-approximate",
+  "event-time-day-only",
+  "event-daypart-night-explicit",
   "location-approximate",
   "location-unknown",
+  "publication-time-day-only-conservative",
   "publication-time-unknown",
   "effort-unknown",
   "species-identification-unverified"
