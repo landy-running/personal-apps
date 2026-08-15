@@ -9,6 +9,13 @@ import { calculateEnvironmentalQuality } from "../../../packages/wanoku-core/src
 import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
 import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
 import { readHydroCoastalObservationsAsOf } from "./hydro-coastal-persistence.js";
+import {
+  PredictionSnapshotIntegrityError,
+  SEABASS_PREDICTION_SNAPSHOT_ID_PREFIX,
+  buildSeabassPredictionSnapshotPayload,
+  persistSeabassPredictionSnapshot,
+  readSeabassPredictionSnapshot as readStoredSeabassPredictionSnapshot
+} from "./prediction-snapshot.js";
 
 const SERVICE_NAME = "wanoku-intel-worker";
 const DEFAULT_WANOKU_PWA_ORIGIN = "https://wanoku-pwa.pages.dev";
@@ -26,6 +33,7 @@ const MAX_SNAPSHOTS_PER_PROVIDER = 73;
 const COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER = 1;
 const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
 const ADMIN_JMA_TIDE_BODY_MAX_BYTES = 4096;
+const ADMIN_PREDICTION_SNAPSHOT_BODY_MAX_BYTES = 2048;
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT = "2026-07-14T00:00:00.000Z";
 const ENVIRONMENT_STATE_JMA_MAPPING_REVIEWED_AT = "2026-07-14T00:00:00.000Z";
@@ -1117,6 +1125,23 @@ async function readSeabassDecision(env, url) {
 
 async function readSeabassPredictionPreview(env, url) {
   const nodeId = url.searchParams.get("nodeId") || url.searchParams.get("node_id");
+  const knowledgeAt = url.searchParams.get("knowledgeAt");
+  const targetAt = url.searchParams.get("targetAt");
+  const prediction = await buildSeabassPredictionForTimes(env, { nodeId, knowledgeAt, targetAt });
+  if (prediction.status !== 200) return prediction;
+
+  return {
+    status: 200,
+    payload: {
+      ...prediction.preview,
+      source: prediction.environmentResult.payload.source,
+      dbConfigured: prediction.environmentResult.payload.dbConfigured,
+      readDiagnostics: prediction.environmentResult.payload.readDiagnostics
+    }
+  };
+}
+
+async function buildSeabassPredictionForTimes(env, { nodeId, knowledgeAt, targetAt }) {
   if (!nodeId) {
     return { status: 400, payload: { ok: false, error: "node_id_required" } };
   }
@@ -1124,9 +1149,6 @@ async function readSeabassPredictionPreview(env, url) {
   if (!node) {
     return { status: 400, payload: { ok: false, error: "invalid_node_id", nodeId } };
   }
-
-  const knowledgeAt = url.searchParams.get("knowledgeAt");
-  const targetAt = url.searchParams.get("targetAt");
   if (!isCanonicalUtcIsoDateTime(knowledgeAt)) {
     return {
       status: 400,
@@ -1159,12 +1181,11 @@ async function readSeabassPredictionPreview(env, url) {
   });
   return {
     status: 200,
-    payload: {
-      ...preview,
-      source: environmentResult.payload.source,
-      dbConfigured: environmentResult.payload.dbConfigured,
-      readDiagnostics: environmentResult.payload.readDiagnostics
-    }
+    preview,
+    environmentResult,
+    habitatState: seabass.habitat.state,
+    seabassState: seabass.state,
+    decision
   };
 }
 
@@ -1674,6 +1695,111 @@ async function handleCollectJmaTidePrediction(request, env) {
   }
 }
 
+async function handleCreateSeabassPredictionSnapshot(request, env) {
+  const auth = isAdminAuthorized(request, env);
+  if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
+  if (!hasD1(env)) {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+
+  const bodyResult = await readAdminJsonBody(request, ADMIN_PREDICTION_SNAPSHOT_BODY_MAX_BYTES);
+  if (!bodyResult.ok) {
+    return json(request, env, {
+      ok: false,
+      error: bodyResult.error,
+      message: bodyResult.message
+    }, { status: 400 });
+  }
+  const allowedFields = new Set(["nodeId", "knowledgeAt", "targetAt"]);
+  const unsupportedFields = Object.keys(bodyResult.body).filter((key) => !allowedFields.has(key));
+  if (unsupportedFields.length > 0) {
+    return json(request, env, {
+      ok: false,
+      error: "invalid_request",
+      errors: unsupportedFields.map((field) => `unsupported field: ${field}`)
+    }, { status: 400 });
+  }
+
+  const prediction = await buildSeabassPredictionForTimes(env, {
+    nodeId: bodyResult.body.nodeId,
+    knowledgeAt: bodyResult.body.knowledgeAt,
+    targetAt: bodyResult.body.targetAt
+  });
+  if (prediction.status !== 200) {
+    return json(request, env, prediction.payload, { status: prediction.status });
+  }
+
+  try {
+    const snapshot = buildSeabassPredictionSnapshotPayload({
+      preview: prediction.preview,
+      habitatState: prediction.habitatState,
+      seabassState: prediction.seabassState,
+      decision: prediction.decision
+    });
+    const result = await persistSeabassPredictionSnapshot(env.WANOKU_INTEL_D1, {
+      snapshot,
+      storedAt: new Date().toISOString()
+    });
+    return json(request, env, result, { status: result.created ? 201 : 200 });
+  } catch (error) {
+    const integrityFailure = error instanceof PredictionSnapshotIntegrityError;
+    console.error(integrityFailure ? "prediction_snapshot_integrity_failed" : "prediction_snapshot_create_failed", {
+      message: error?.message || "Prediction snapshot creation failed."
+    });
+    return json(request, env, {
+      ok: false,
+      error: integrityFailure ? error.code : "prediction_snapshot_create_failed",
+      message: integrityFailure
+        ? "Stored prediction snapshot failed integrity verification."
+        : "Prediction snapshot creation failed."
+    }, { status: 500 });
+  }
+}
+
+async function handleReadSeabassPredictionSnapshot(request, env, pathname) {
+  if (!hasD1(env)) {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+  const routePrefix = "/predictions/seabass/snapshots/";
+  let snapshotId;
+  try {
+    snapshotId = decodeURIComponent(pathname.slice(routePrefix.length));
+  } catch {
+    return json(request, env, { ok: false, error: "invalid_snapshot_id" }, { status: 400 });
+  }
+  const payloadHash = snapshotId.startsWith(SEABASS_PREDICTION_SNAPSHOT_ID_PREFIX)
+    ? snapshotId.slice(SEABASS_PREDICTION_SNAPSHOT_ID_PREFIX.length)
+    : "";
+  if (!/^[0-9a-f]{64}$/.test(payloadHash)) {
+    return json(request, env, { ok: false, error: "invalid_snapshot_id" }, { status: 400 });
+  }
+
+  try {
+    const result = await readStoredSeabassPredictionSnapshot(env.WANOKU_INTEL_D1, snapshotId);
+    if (!result.found) {
+      return json(request, env, { ok: false, error: "prediction_snapshot_not_found" }, { status: 404 });
+    }
+    return json(request, env, {
+      snapshotId: result.snapshotId,
+      payloadHash: result.payloadHash,
+      storedAt: result.storedAt,
+      snapshot: result.snapshot
+    });
+  } catch (error) {
+    const integrityFailure = error instanceof PredictionSnapshotIntegrityError;
+    console.error(integrityFailure ? "prediction_snapshot_integrity_failed" : "prediction_snapshot_read_failed", {
+      message: error?.message || "Prediction snapshot read failed."
+    });
+    return json(request, env, {
+      ok: false,
+      error: integrityFailure ? error.code : "prediction_snapshot_read_failed",
+      message: integrityFailure
+        ? "Stored prediction snapshot failed integrity verification."
+        : "Prediction snapshot read failed."
+    }, { status: 500 });
+  }
+}
+
 async function readAdminJsonBody(request, maxBytes) {
   const contentType = request.headers.get("Content-Type") || "";
   if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
@@ -1860,6 +1986,10 @@ async function handleRequest(request, env) {
     return handleCollectJmaTidePrediction(request, env);
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/predictions/seabass/snapshots") {
+    return handleCreateSeabassPredictionSnapshot(request, env);
+  }
+
   if (request.method !== "GET") {
     return json(request, env, { error: "method_not_allowed" }, { status: 405 });
   }
@@ -1884,8 +2014,10 @@ async function handleRequest(request, env) {
         "/species/seabass/state",
         "/species/seabass/decision",
         "/species/seabass/prediction-preview",
+        "/predictions/seabass/snapshots/:id",
         "POST /admin/collect-environment",
-        "POST /admin/collect-jma-tide-prediction"
+        "POST /admin/collect-jma-tide-prediction",
+        "POST /admin/predictions/seabass/snapshots"
       ]
     });
   }
@@ -1945,6 +2077,9 @@ async function handleRequest(request, env) {
   if (url.pathname === "/species/seabass/prediction-preview") {
     const result = await readSeabassPredictionPreview(env, url);
     return json(request, env, result.payload, { status: result.status });
+  }
+  if (url.pathname.startsWith("/predictions/seabass/snapshots/")) {
+    return handleReadSeabassPredictionSnapshot(request, env, url.pathname);
   }
 
   return json(request, env, { error: "not_found" }, { status: 404 });
