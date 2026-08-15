@@ -38,6 +38,46 @@ describe("Wanoku Environment State v1", () => {
     expect(buildEnvironmentState(input)).toEqual(buildEnvironmentState(input));
   });
 
+  it("passes existing marine feature values through with field provenance", () => {
+    const state = buildEnvironmentState({
+      nodeId: "tokyo-inner-bay-01",
+      asOf: TARGET_AT,
+      habitatGraph: graph(),
+      environmentalSnapshots: [snapshot({
+        source: "open-meteo-marine",
+        seaSurfaceTemperature: 24.6,
+        waveHeight: 0.7,
+        wavePeriod: 5.5,
+        waveDirection: 120,
+        oceanCurrentVelocity: 0.4,
+        oceanCurrentDirection: 95,
+        seaLevelHeightMsl: 0.18
+      })],
+      hydroCoastalObservations: [],
+      hydroCoastalStationNodeMappings: mappings()
+    });
+
+    expect(state.marine).toEqual({
+      waterTemperatureC: 24.6,
+      waveHeightM: 0.7,
+      wavePeriodS: 5.5,
+      waveDirectionDeg: 120,
+      currentSpeedMps: 0.4,
+      currentDirectionDeg: 95,
+      seaLevelM: 0.18,
+      sourceCollectedAt: COLLECTED_AT,
+      sourceProviderIds: ["open-meteo-marine"]
+    });
+    for (const field of ["waterTemperatureC", "waveHeightM", "currentSpeedMps"]) {
+      expect(state.provenance.environmental).toContainEqual(expect.objectContaining({
+        field,
+        providerId: "open-meteo-marine",
+        collectedAt: COLLECTED_AT,
+        missingReasons: []
+      }));
+    }
+  });
+
   it("uses the correct environmental and tide value for different asOf timestamps", () => {
     const base = {
       nodeId: "tokyo-inner-bay-01",
@@ -118,9 +158,23 @@ describe("Wanoku Environment State v1", () => {
     });
 
     expect(state.atmosphere.windSpeedMps).toBeNull();
+    expect(state.marine).toEqual({
+      waterTemperatureC: null,
+      waveHeightM: null,
+      wavePeriodS: null,
+      waveDirectionDeg: null,
+      currentSpeedMps: null,
+      currentDirectionDeg: null,
+      seaLevelM: null,
+      sourceCollectedAt: null,
+      sourceProviderIds: []
+    });
     expect(state.freshness.missingComponents).toEqual(expect.arrayContaining([
       "atmosphere.windSpeedMps",
-      "atmosphere.pressureHpa"
+      "atmosphere.pressureHpa",
+      "marine.waterTemperatureC",
+      "marine.waveHeightM",
+      "marine.currentSpeedMps"
     ]));
   });
 

@@ -42,6 +42,18 @@ export type EnvironmentStateAtmosphere = {
   sourceProviderIds: string[];
 };
 
+export type EnvironmentStateMarine = {
+  waterTemperatureC: number | null;
+  waveHeightM: number | null;
+  wavePeriodS: number | null;
+  waveDirectionDeg: number | null;
+  currentSpeedMps: number | null;
+  currentDirectionDeg: number | null;
+  seaLevelM: number | null;
+  sourceCollectedAt: string | null;
+  sourceProviderIds: string[];
+};
+
 export type EnvironmentStateFreshnessComponent = {
   sourceTimestamp: string | null;
   ageHours: number | null;
@@ -89,6 +101,7 @@ export type EnvironmentState = {
   asOf: string;
   tide: EnvironmentStateTide;
   atmosphere: EnvironmentStateAtmosphere;
+  marine: EnvironmentStateMarine;
   freshness: EnvironmentStateFreshness;
   quality: EnvironmentStateQuality;
   provenance: EnvironmentStateProvenance;
@@ -112,7 +125,24 @@ const STATE_COMPONENTS = [
   "atmosphere.windDirectionDeg",
   "atmosphere.precipitationMm",
   "atmosphere.pressureHpa",
-  "atmosphere.airTemperatureC"
+  "atmosphere.airTemperatureC",
+  "marine.waterTemperatureC",
+  "marine.waveHeightM",
+  "marine.wavePeriodS",
+  "marine.waveDirectionDeg",
+  "marine.currentSpeedMps",
+  "marine.currentDirectionDeg",
+  "marine.seaLevelM"
+] as const;
+
+const MARINE_FEATURE_FIELDS = [
+  "waterTemperatureC",
+  "waveHeightM",
+  "wavePeriodS",
+  "waveDirectionDeg",
+  "currentSpeedMps",
+  "currentDirectionDeg",
+  "seaLevelM"
 ] as const;
 
 export function buildEnvironmentState(input: BuildEnvironmentStateInput): EnvironmentState {
@@ -155,7 +185,19 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
     sourceCollectedAt: environmentalFeature.sourceCollectedAt,
     sourceProviderIds: environmentalFeature.sourceProviderIds
   };
-  const missingComponents = missingStateComponents(tide, atmosphere);
+  const marineSource = componentSourceMetadata(environmentalFeature.provenance, MARINE_FEATURE_FIELDS);
+  const marine: EnvironmentStateMarine = {
+    waterTemperatureC: environmentalFeature.waterTemperatureC,
+    waveHeightM: environmentalFeature.waveHeightM,
+    wavePeriodS: environmentalFeature.wavePeriodS,
+    waveDirectionDeg: environmentalFeature.waveDirectionDeg,
+    currentSpeedMps: environmentalFeature.currentSpeedMps,
+    currentDirectionDeg: environmentalFeature.currentDirectionDeg,
+    seaLevelM: environmentalFeature.seaLevelM,
+    sourceCollectedAt: marineSource.sourceCollectedAt,
+    sourceProviderIds: marineSource.sourceProviderIds
+  };
+  const missingComponents = missingStateComponents(tide, atmosphere, marine);
   const staleComponents = [
     ...(environmentalFeature.dataQuality.staleCount > 0 ? ["atmosphere"] : [])
   ];
@@ -166,6 +208,7 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
     asOf: input.asOf,
     tide,
     atmosphere,
+    marine,
     freshness: {
       atmosphere: {
         sourceTimestamp: atmosphere.sourceCollectedAt,
@@ -223,7 +266,11 @@ export function tidePhaseFromTrend(trend: TideTrendDirection): EnvironmentStateT
   return "unknown";
 }
 
-function missingStateComponents(tide: EnvironmentStateTide, atmosphere: EnvironmentStateAtmosphere): string[] {
+function missingStateComponents(
+  tide: EnvironmentStateTide,
+  atmosphere: EnvironmentStateAtmosphere,
+  marine: EnvironmentStateMarine
+): string[] {
   const missing: string[] = [];
   if (tide.levelCm == null) missing.push("tide.levelCm");
   if (tide.slopeCmPerHour == null) missing.push("tide.slopeCmPerHour");
@@ -232,7 +279,40 @@ function missingStateComponents(tide: EnvironmentStateTide, atmosphere: Environm
   if (atmosphere.precipitationMm == null) missing.push("atmosphere.precipitationMm");
   if (atmosphere.pressureHpa == null) missing.push("atmosphere.pressureHpa");
   if (atmosphere.airTemperatureC == null) missing.push("atmosphere.airTemperatureC");
+  if (marine.waterTemperatureC == null) missing.push("marine.waterTemperatureC");
+  if (marine.waveHeightM == null) missing.push("marine.waveHeightM");
+  if (marine.wavePeriodS == null) missing.push("marine.wavePeriodS");
+  if (marine.waveDirectionDeg == null) missing.push("marine.waveDirectionDeg");
+  if (marine.currentSpeedMps == null) missing.push("marine.currentSpeedMps");
+  if (marine.currentDirectionDeg == null) missing.push("marine.currentDirectionDeg");
+  if (marine.seaLevelM == null) missing.push("marine.seaLevelM");
   return missing;
+}
+
+function componentSourceMetadata(
+  provenance: readonly EnvironmentalFeatureProvenance[],
+  fields: readonly string[]
+): { sourceCollectedAt: string | null; sourceProviderIds: string[] } {
+  const fieldSet = new Set(fields);
+  const matched = provenance.filter((entry) => fieldSet.has(entry.field) && (entry.sampleCount ?? 0) > 0);
+  const collectedTimes = matched.flatMap((entry) => [
+    entry.collectedAt,
+    ...(entry.sourceCollectedAts ?? [])
+  ]).filter((value): value is string => Boolean(value));
+  const sourceCollectedAt = collectedTimes
+    .map((value) => Date.parse(value))
+    .filter(Number.isFinite)
+    .sort((left, right) => right - left)
+    .at(0);
+  const sourceProviderIds = [...new Set(matched.flatMap((entry) => [
+    entry.providerId,
+    ...(entry.providerIds ?? [])
+  ]).filter((value): value is string => Boolean(value)))].sort();
+
+  return {
+    sourceCollectedAt: sourceCollectedAt == null ? null : new Date(sourceCollectedAt).toISOString(),
+    sourceProviderIds
+  };
 }
 
 function ageHours(sourceTimestamp: string | null | undefined, asOf: string): number | null {

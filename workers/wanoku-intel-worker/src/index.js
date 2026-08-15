@@ -2,6 +2,7 @@ import { TOKYO_BAY_ENVIRONMENT_NODES } from "./environment-nodes.js";
 import { ingestJmaTidePredictionSource } from "./jma-tide-prediction-ingestion.js";
 import { getJmaTidePredictionSourceDefinition } from "./jma-tide-prediction-sources.js";
 import { buildEnvironmentState } from "../../../packages/wanoku-core/src/environment-state.ts";
+import { buildHabitatState } from "../../../packages/wanoku-core/src/habitat-state.ts";
 import { calculateEnvironmentalQuality } from "../../../packages/wanoku-core/src/environment.ts";
 import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
 import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
@@ -1052,6 +1053,32 @@ async function readEnvironmentState(env, url) {
   };
 }
 
+async function readHabitatState(env, url) {
+  const environmentResult = await readEnvironmentState(env, url);
+  if (environmentResult.status !== 200) return environmentResult;
+
+  const habitatGraph = createInitialHabitatGraph(
+    TOKYO_BAY_ENVIRONMENT_NODES,
+    ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT
+  );
+  const habitatNode = habitatGraph.nodes.find((node) => node.id === environmentResult.payload.nodeId);
+  const habitatState = buildHabitatState({
+    environmentState: environmentResult.payload,
+    habitatNode,
+    asOf: environmentResult.payload.asOf
+  });
+
+  return {
+    status: 200,
+    payload: {
+      ...habitatState,
+      source: environmentResult.payload.source,
+      dbConfigured: environmentResult.payload.dbConfigured,
+      readDiagnostics: environmentResult.payload.readDiagnostics
+    }
+  };
+}
+
 async function readEnvironmentStateSnapshots(env, nodeId, asOf) {
   if (!hasD1(env)) {
     return { snapshots: fixtureEnvironmentSnapshots(nodeId), source: "fixture", dbConfigured: false };
@@ -1649,6 +1676,7 @@ async function handleRequest(request, env) {
         "/environment/history",
         "/environment/quality",
         "/environment/state",
+        "/habitat/state",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction"
       ]
@@ -1693,6 +1721,10 @@ async function handleRequest(request, env) {
   }
   if (url.pathname === "/environment/state") {
     const result = await readEnvironmentState(env, url);
+    return json(request, env, result.payload, { status: result.status });
+  }
+  if (url.pathname === "/habitat/state") {
+    const result = await readHabitatState(env, url);
     return json(request, env, result.payload, { status: result.status });
   }
 

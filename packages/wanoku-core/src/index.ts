@@ -170,11 +170,36 @@ export {
   type EnvironmentStateDiagnostics,
   type EnvironmentStateFreshness,
   type EnvironmentStateFreshnessComponent,
+  type EnvironmentStateMarine,
   type EnvironmentStateProvenance,
   type EnvironmentStateQuality,
   type EnvironmentStateTide,
   type EnvironmentStateTidePhase
 } from "./environment-state";
+export {
+  FLOW_ENERGY_MODERATE_MIN_CM_PER_HOUR,
+  FLOW_ENERGY_STRONG_ABOVE_CM_PER_HOUR,
+  HABITAT_STATE_RULE_VERSION,
+  HABITAT_STATE_SCHEMA_VERSION,
+  WIND_ENERGY_MODERATE_MIN_MPS,
+  WIND_ENERGY_STRONG_MIN_MPS,
+  buildHabitatState,
+  classifyFlowEnergyState,
+  classifyWindEnergyState,
+  type BuildHabitatStateInput,
+  type HabitatState,
+  type HabitatStateContext,
+  type HabitatStateDerivation,
+  type HabitatStateDirectionalExposure,
+  type HabitatStateDisturbance,
+  type HabitatStateEnergy,
+  type HabitatStateExchange,
+  type HabitatStateExposure,
+  type HabitatStateFreshwaterInfluence,
+  type HabitatStateHydrodynamics,
+  type HabitatStateUnknownReason,
+  type HabitatStateWaterLevel
+} from "./habitat-state";
 export {
   JMA_TIDE_PREDICTION_FIXED_WIDTH_ADAPTER,
   JMA_TIDE_PREDICTION_LINE_LENGTH,

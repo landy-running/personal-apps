@@ -47,6 +47,13 @@ describe("wanoku intel worker environment state endpoint", () => {
       }
     });
     expect(body.atmosphere.windSpeedMps).toBe(4);
+    expect(body.marine).toMatchObject({
+      waterTemperatureC: 26.5,
+      waveHeightM: 0.4,
+      currentSpeedMps: 0.3,
+      sourceCollectedAt: "2026-07-11T09:00:00.000Z",
+      sourceProviderIds: ["open-meteo-marine"]
+    });
     expect(body.freshness.missingComponents).toContain("tide.levelCm");
     expect(body.provenance.environmental.length).toBeGreaterThan(0);
   });
