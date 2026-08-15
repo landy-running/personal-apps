@@ -4,6 +4,7 @@ import { getJmaTidePredictionSourceDefinition } from "./jma-tide-prediction-sour
 import { buildEnvironmentState } from "../../../packages/wanoku-core/src/environment-state.ts";
 import { buildHabitatState } from "../../../packages/wanoku-core/src/habitat-state.ts";
 import { buildSeabassState } from "../../../packages/wanoku-core/src/seabass-state.ts";
+import { buildSeabassDecision } from "../../../packages/wanoku-core/src/seabass-decision.ts";
 import { calculateEnvironmentalQuality } from "../../../packages/wanoku-core/src/environment.ts";
 import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
 import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
@@ -1074,22 +1075,46 @@ async function readSeabassState(env, url) {
   const environmentResult = await readEnvironmentState(env, url);
   if (environmentResult.status !== 200) return environmentResult;
 
-  const habitat = buildHabitatStateForEnvironmentPayload(environmentResult.payload);
-  const seabassState = buildSeabassState({
-    environmentState: environmentResult.payload,
-    habitatState: habitat.state,
-    habitatNode: habitat.node,
-    asOf: environmentResult.payload.asOf
-  });
+  const seabass = buildSeabassStateForEnvironmentPayload(environmentResult.payload);
 
   return {
     status: 200,
     payload: {
-      ...seabassState,
+      ...seabass.state,
       source: environmentResult.payload.source,
       dbConfigured: environmentResult.payload.dbConfigured,
       readDiagnostics: environmentResult.payload.readDiagnostics
     }
+  };
+}
+
+async function readSeabassDecision(env, url) {
+  const environmentResult = await readEnvironmentState(env, url);
+  if (environmentResult.status !== 200) return environmentResult;
+
+  const seabass = buildSeabassStateForEnvironmentPayload(environmentResult.payload);
+  const decision = buildSeabassDecision(seabass.state);
+  return {
+    status: 200,
+    payload: {
+      ...decision,
+      source: environmentResult.payload.source,
+      dbConfigured: environmentResult.payload.dbConfigured,
+      readDiagnostics: environmentResult.payload.readDiagnostics
+    }
+  };
+}
+
+function buildSeabassStateForEnvironmentPayload(environmentPayload) {
+  const habitat = buildHabitatStateForEnvironmentPayload(environmentPayload);
+  return {
+    habitat,
+    state: buildSeabassState({
+      environmentState: environmentPayload,
+      habitatState: habitat.state,
+      habitatNode: habitat.node,
+      asOf: environmentPayload.asOf
+    })
   };
 }
 
@@ -1708,6 +1733,7 @@ async function handleRequest(request, env) {
         "/environment/state",
         "/habitat/state",
         "/species/seabass/state",
+        "/species/seabass/decision",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction"
       ]
@@ -1760,6 +1786,10 @@ async function handleRequest(request, env) {
   }
   if (url.pathname === "/species/seabass/state") {
     const result = await readSeabassState(env, url);
+    return json(request, env, result.payload, { status: result.status });
+  }
+  if (url.pathname === "/species/seabass/decision") {
+    const result = await readSeabassDecision(env, url);
     return json(request, env, result.payload, { status: result.status });
   }
 

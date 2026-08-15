@@ -217,6 +217,17 @@ export {
   type SeabassStateDerivation
 } from "./seabass-state";
 export {
+  SEABASS_DECISION_RULE_VERSION,
+  SEABASS_DECISION_SCHEMA_VERSION,
+  buildSeabassDecision,
+  decideSeabassAction,
+  type SeabassDecision,
+  type SeabassDecisionAction,
+  type SeabassDecisionAxis,
+  type SeabassDecisionDriver,
+  type SeabassDecisionDriverEffect
+} from "./seabass-decision";
+export {
   JMA_TIDE_PREDICTION_FIXED_WIDTH_ADAPTER,
   JMA_TIDE_PREDICTION_LINE_LENGTH,
   JMA_TIDE_PREDICTION_PARSER_ID,
