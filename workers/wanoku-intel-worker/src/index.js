@@ -1,6 +1,11 @@
 import { TOKYO_BAY_ENVIRONMENT_NODES } from "./environment-nodes.js";
 import { ingestJmaTidePredictionSource } from "./jma-tide-prediction-ingestion.js";
 import { getJmaTidePredictionSourceDefinition } from "./jma-tide-prediction-sources.js";
+import { buildEnvironmentState } from "../../../packages/wanoku-core/src/environment-state.ts";
+import { calculateEnvironmentalQuality } from "../../../packages/wanoku-core/src/environment.ts";
+import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
+import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
+import { readHydroCoastalObservationsAsOf } from "./hydro-coastal-persistence.js";
 
 const SERVICE_NAME = "wanoku-intel-worker";
 const DEFAULT_WANOKU_PWA_ORIGIN = "https://wanoku-pwa.pages.dev";
@@ -19,6 +24,9 @@ const COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER = 1;
 const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
 const ADMIN_JMA_TIDE_BODY_MAX_BYTES = 4096;
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT = "2026-07-14T00:00:00.000Z";
+const ENVIRONMENT_STATE_JMA_MAPPING_REVIEWED_AT = "2026-07-14T00:00:00.000Z";
+const ENVIRONMENT_STATE_HYDRO_LOOKBACK_HOURS = 6;
 const SOURCE_RUN_COLUMNS = [
   "id",
   "provider",
@@ -977,6 +985,132 @@ async function readEnvironmentQuality(env, url) {
   };
 }
 
+async function readEnvironmentState(env, url) {
+  const nodeId = url.searchParams.get("nodeId") || url.searchParams.get("node_id");
+  if (!nodeId) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "node_id_required" }
+    };
+  }
+  const node = TOKYO_BAY_ENVIRONMENT_NODES.find((item) => item.id === nodeId);
+  if (!node) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "invalid_node_id", nodeId }
+    };
+  }
+
+  const requestedAt = url.searchParams.get("at");
+  const asOf = requestedAt || new Date().toISOString();
+  if (!isCanonicalUtcIsoDateTime(asOf)) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "invalid_at", message: "at must be canonical UTC ISO datetime." }
+    };
+  }
+
+  const habitatGraph = createInitialHabitatGraph(
+    TOKYO_BAY_ENVIRONMENT_NODES,
+    ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT
+  );
+  const mappingResult = buildJmaTidePredictionStationNodeMappings2026({
+    habitatGraph,
+    reviewedAt: ENVIRONMENT_STATE_JMA_MAPPING_REVIEWED_AT
+  });
+  const activeMapping = activeJmaTidePredictionMappingForNode(mappingResult.mappings, node.id, asOf);
+  const environment = await readEnvironmentStateSnapshots(env, node.id, asOf);
+  const hydro = await readEnvironmentStateHydroCoastal(env, activeMapping, asOf);
+  const environmentalQualityReports = environment.snapshots.map((snapshot) => (
+    calculateEnvironmentalQuality(snapshot, asOf)
+  ));
+  const state = buildEnvironmentState({
+    nodeId: node.id,
+    asOf,
+    habitatGraph,
+    environmentalSnapshots: environment.snapshots,
+    environmentalQualityReports,
+    hydroCoastalObservations: hydro.observations,
+    hydroCoastalStationNodeMappings: mappingResult.mappings
+  });
+
+  return {
+    status: 200,
+    payload: {
+      ...state,
+      source: environment.source,
+      dbConfigured: environment.dbConfigured,
+      readDiagnostics: {
+        mappingErrors: mappingResult.errors,
+        mappingWarnings: mappingResult.warnings,
+        hydroCoastalReadErrors: hydro.errors,
+        hydroCoastalReadWarnings: hydro.warnings,
+        hydroCoastalScannedRowCount: hydro.scannedRowCount,
+        hydroCoastalReturnedObservationCount: hydro.returnedObservationCount
+      }
+    }
+  };
+}
+
+async function readEnvironmentStateSnapshots(env, nodeId, asOf) {
+  if (!hasD1(env)) {
+    return { snapshots: fixtureEnvironmentSnapshots(nodeId), source: "fixture", dbConfigured: false };
+  }
+
+  const rows = await env.WANOKU_INTEL_D1.prepare(`
+    SELECT snapshot_key, normalized_json, collected_at, forecast_issued_at, created_at
+    FROM environmental_snapshots
+    WHERE node_id = ?
+      AND observed_at <= ?
+      AND collected_at <= ?
+    ORDER BY COALESCE(collected_at, forecast_issued_at, created_at) DESC, observed_at DESC, created_at DESC
+    LIMIT ?
+  `).bind(nodeId, asOf, asOf, 500).all();
+  return { snapshots: rowsToSnapshots(rows), source: "d1", dbConfigured: true };
+}
+
+async function readEnvironmentStateHydroCoastal(env, activeMapping, asOf) {
+  if (!hasD1(env)) {
+    return {
+      observations: [],
+      errors: [],
+      warnings: [],
+      scannedRowCount: 0,
+      returnedObservationCount: 0
+    };
+  }
+
+  return readHydroCoastalObservationsAsOf(env.WANOKU_INTEL_D1, {
+    providerId: "jma-tide-prediction",
+    stationId: activeMapping?.stationId,
+    metric: "predicted-tide-level",
+    observedStart: hoursFromIso(asOf, -ENVIRONMENT_STATE_HYDRO_LOOKBACK_HOURS),
+    observedEnd: hoursFromIso(asOf, 1),
+    calculatedAt: asOf,
+    limit: 24
+  });
+}
+
+function activeJmaTidePredictionMappingForNode(mappings, nodeId, asOf) {
+  return mappings.find((mapping) => (
+    mapping.providerId === "jma-tide-prediction" &&
+    mapping.habitatNodeId === nodeId &&
+    isMappingActiveAt(mapping, asOf)
+  )) || null;
+}
+
+function isMappingActiveAt(mapping, asOf) {
+  if (!isCanonicalUtcIsoDateTime(asOf)) return false;
+  const asOfMs = Date.parse(asOf);
+  return Date.parse(mapping.validFrom) <= asOfMs && (
+    mapping.validTo == null || asOfMs < Date.parse(mapping.validTo)
+  );
+}
+
+function hoursFromIso(value, hours) {
+  return new Date(Date.parse(value) + hours * 3_600_000).toISOString();
+}
+
 export function rowsToSnapshots(rows) {
   return (rows?.results || [])
     .map((row) => hydrateEnvironmentalSnapshotRow(row))
@@ -1514,6 +1648,7 @@ async function handleRequest(request, env) {
         "/environment/current",
         "/environment/history",
         "/environment/quality",
+        "/environment/state",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction"
       ]
@@ -1555,6 +1690,10 @@ async function handleRequest(request, env) {
   }
   if (url.pathname === "/environment/quality") {
     return json(request, env, await readEnvironmentQuality(env, url));
+  }
+  if (url.pathname === "/environment/state") {
+    const result = await readEnvironmentState(env, url);
+    return json(request, env, result.payload, { status: result.status });
   }
 
   return json(request, env, { error: "not_found" }, { status: 404 });

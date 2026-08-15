@@ -161,6 +161,21 @@ export {
   type WaterLevelNormalizationResult
 } from "./hydro-coastal-features";
 export {
+  ENVIRONMENT_STATE_SCHEMA_VERSION,
+  buildEnvironmentState,
+  tidePhaseFromTrend,
+  type BuildEnvironmentStateInput,
+  type EnvironmentState,
+  type EnvironmentStateAtmosphere,
+  type EnvironmentStateDiagnostics,
+  type EnvironmentStateFreshness,
+  type EnvironmentStateFreshnessComponent,
+  type EnvironmentStateProvenance,
+  type EnvironmentStateQuality,
+  type EnvironmentStateTide,
+  type EnvironmentStateTidePhase
+} from "./environment-state";
+export {
   JMA_TIDE_PREDICTION_FIXED_WIDTH_ADAPTER,
   JMA_TIDE_PREDICTION_LINE_LENGTH,
   JMA_TIDE_PREDICTION_PARSER_ID,
