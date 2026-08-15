@@ -201,6 +201,22 @@ export {
   type HabitatStateWaterLevel
 } from "./habitat-state";
 export {
+  JAPANESE_SEABASS_SCIENTIFIC_NAME,
+  JAPANESE_SEABASS_SPECIES_ID,
+  SEABASS_STATE_RULE_VERSION,
+  SEABASS_STATE_SCHEMA_VERSION,
+  aggregateSeabassAxisEffects,
+  buildSeabassState,
+  type BuildSeabassStateInput,
+  type SeabassAxis,
+  type SeabassAxisState,
+  type SeabassDriver,
+  type SeabassDriverEffect,
+  type SeabassDriverValue,
+  type SeabassState,
+  type SeabassStateDerivation
+} from "./seabass-state";
+export {
   JMA_TIDE_PREDICTION_FIXED_WIDTH_ADAPTER,
   JMA_TIDE_PREDICTION_LINE_LENGTH,
   JMA_TIDE_PREDICTION_PARSER_ID,

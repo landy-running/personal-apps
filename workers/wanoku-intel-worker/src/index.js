@@ -3,6 +3,7 @@ import { ingestJmaTidePredictionSource } from "./jma-tide-prediction-ingestion.j
 import { getJmaTidePredictionSourceDefinition } from "./jma-tide-prediction-sources.js";
 import { buildEnvironmentState } from "../../../packages/wanoku-core/src/environment-state.ts";
 import { buildHabitatState } from "../../../packages/wanoku-core/src/habitat-state.ts";
+import { buildSeabassState } from "../../../packages/wanoku-core/src/seabass-state.ts";
 import { calculateEnvironmentalQuality } from "../../../packages/wanoku-core/src/environment.ts";
 import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
 import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
@@ -1057,25 +1058,54 @@ async function readHabitatState(env, url) {
   const environmentResult = await readEnvironmentState(env, url);
   if (environmentResult.status !== 200) return environmentResult;
 
-  const habitatGraph = createInitialHabitatGraph(
-    TOKYO_BAY_ENVIRONMENT_NODES,
-    ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT
-  );
-  const habitatNode = habitatGraph.nodes.find((node) => node.id === environmentResult.payload.nodeId);
-  const habitatState = buildHabitatState({
+  const habitat = buildHabitatStateForEnvironmentPayload(environmentResult.payload);
+  return {
+    status: 200,
+    payload: {
+      ...habitat.state,
+      source: environmentResult.payload.source,
+      dbConfigured: environmentResult.payload.dbConfigured,
+      readDiagnostics: environmentResult.payload.readDiagnostics
+    }
+  };
+}
+
+async function readSeabassState(env, url) {
+  const environmentResult = await readEnvironmentState(env, url);
+  if (environmentResult.status !== 200) return environmentResult;
+
+  const habitat = buildHabitatStateForEnvironmentPayload(environmentResult.payload);
+  const seabassState = buildSeabassState({
     environmentState: environmentResult.payload,
-    habitatNode,
+    habitatState: habitat.state,
+    habitatNode: habitat.node,
     asOf: environmentResult.payload.asOf
   });
 
   return {
     status: 200,
     payload: {
-      ...habitatState,
+      ...seabassState,
       source: environmentResult.payload.source,
       dbConfigured: environmentResult.payload.dbConfigured,
       readDiagnostics: environmentResult.payload.readDiagnostics
     }
+  };
+}
+
+function buildHabitatStateForEnvironmentPayload(environmentPayload) {
+  const habitatGraph = createInitialHabitatGraph(
+    TOKYO_BAY_ENVIRONMENT_NODES,
+    ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT
+  );
+  const habitatNode = habitatGraph.nodes.find((node) => node.id === environmentPayload.nodeId);
+  return {
+    node: habitatNode,
+    state: buildHabitatState({
+      environmentState: environmentPayload,
+      habitatNode,
+      asOf: environmentPayload.asOf
+    })
   };
 }
 
@@ -1677,6 +1707,7 @@ async function handleRequest(request, env) {
         "/environment/quality",
         "/environment/state",
         "/habitat/state",
+        "/species/seabass/state",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction"
       ]
@@ -1725,6 +1756,10 @@ async function handleRequest(request, env) {
   }
   if (url.pathname === "/habitat/state") {
     const result = await readHabitatState(env, url);
+    return json(request, env, result.payload, { status: result.status });
+  }
+  if (url.pathname === "/species/seabass/state") {
+    const result = await readSeabassState(env, url);
     return json(request, env, result.payload, { status: result.status });
   }
 
