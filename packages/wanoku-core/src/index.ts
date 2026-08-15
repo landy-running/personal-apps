@@ -277,3 +277,28 @@ export {
   type SpeciesFreshnessProfile,
   type SpeciesObservation
 } from "./intelligence";
+export {
+  JAPANESE_SEABASS_EXTERNAL_EVIDENCE_SPECIES_ID,
+  SEABASS_EXTERNAL_EVIDENCE_EXTRACTION_METHODS,
+  SEABASS_EXTERNAL_EVIDENCE_MAPPING_METHODS,
+  SEABASS_EXTERNAL_EVIDENCE_MAPPING_STATUSES,
+  SEABASS_EXTERNAL_EVIDENCE_QUALITY_FLAGS,
+  SEABASS_EXTERNAL_EVIDENCE_SCHEMA_VERSION,
+  SEABASS_EXTERNAL_EVIDENCE_SOURCE_CLASSES,
+  SEABASS_EXTERNAL_EVIDENCE_TYPES,
+  buildSeabassEvidenceSemanticContent,
+  buildSeabassExternalEvidence,
+  seabassExternalEvidenceSourceIdentity,
+  type SeabassExternalEvidence,
+  type SeabassExternalEvidenceCatchOutcome,
+  type SeabassExternalEvidenceExtractionMethod,
+  type SeabassExternalEvidenceInput,
+  type SeabassExternalEvidenceMappingMethod,
+  type SeabassExternalEvidenceMappingStatus,
+  type SeabassExternalEvidencePresenceSupport,
+  type SeabassExternalEvidenceQualityFlag,
+  type SeabassExternalEvidenceSourceClass,
+  type SeabassExternalEvidenceType,
+  type SeabassExternalEvidenceValidationResult,
+  type SeabassEvidenceSemanticContent
+} from "./external-evidence";

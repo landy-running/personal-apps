@@ -5,6 +5,7 @@ import { buildEnvironmentState } from "../../../packages/wanoku-core/src/environ
 import { buildHabitatState } from "../../../packages/wanoku-core/src/habitat-state.ts";
 import { buildSeabassState } from "../../../packages/wanoku-core/src/seabass-state.ts";
 import { buildSeabassDecision } from "../../../packages/wanoku-core/src/seabass-decision.ts";
+import { buildSeabassExternalEvidence } from "../../../packages/wanoku-core/src/external-evidence.ts";
 import { calculateEnvironmentalQuality } from "../../../packages/wanoku-core/src/environment.ts";
 import { createInitialHabitatGraph } from "../../../packages/wanoku-core/src/habitat-fixtures.ts";
 import { buildJmaTidePredictionStationNodeMappings2026 } from "../../../packages/wanoku-core/src/jma-tide-prediction-mappings.ts";
@@ -16,6 +17,12 @@ import {
   persistSeabassPredictionSnapshot,
   readSeabassPredictionSnapshot as readStoredSeabassPredictionSnapshot
 } from "./prediction-snapshot.js";
+import {
+  ExternalEvidenceIntegrityError,
+  SEABASS_EXTERNAL_EVIDENCE_ID_PREFIX,
+  persistSeabassExternalEvidence,
+  readSeabassExternalEvidence as readStoredSeabassExternalEvidence
+} from "./external-evidence-persistence.js";
 
 const SERVICE_NAME = "wanoku-intel-worker";
 const DEFAULT_WANOKU_PWA_ORIGIN = "https://wanoku-pwa.pages.dev";
@@ -34,6 +41,7 @@ const COLLECTED_SNAPSHOTS_PER_NODE_PROVIDER = 1;
 const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
 const ADMIN_JMA_TIDE_BODY_MAX_BYTES = 4096;
 const ADMIN_PREDICTION_SNAPSHOT_BODY_MAX_BYTES = 2048;
+const ADMIN_EXTERNAL_EVIDENCE_BODY_MAX_BYTES = 16_384;
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT = "2026-07-14T00:00:00.000Z";
 const ENVIRONMENT_STATE_JMA_MAPPING_REVIEWED_AT = "2026-07-14T00:00:00.000Z";
@@ -1800,6 +1808,99 @@ async function handleReadSeabassPredictionSnapshot(request, env, pathname) {
   }
 }
 
+async function handleCreateSeabassExternalEvidence(request, env) {
+  const auth = isAdminAuthorized(request, env);
+  if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
+  if (!hasD1(env)) {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+
+  const bodyResult = await readAdminJsonBody(request, ADMIN_EXTERNAL_EVIDENCE_BODY_MAX_BYTES);
+  if (!bodyResult.ok) {
+    return json(request, env, {
+      ok: false,
+      error: bodyResult.error,
+      message: bodyResult.message
+    }, { status: 400 });
+  }
+  const validation = buildSeabassExternalEvidence(
+    bodyResult.body,
+    TOKYO_BAY_ENVIRONMENT_NODES.map((node) => node.id)
+  );
+  if (!validation.valid || !validation.evidence) {
+    return json(request, env, {
+      ok: false,
+      error: "invalid_external_evidence",
+      errors: validation.errors,
+      warnings: validation.warnings
+    }, { status: 400 });
+  }
+
+  try {
+    const result = await persistSeabassExternalEvidence(env.WANOKU_INTEL_D1, {
+      evidence: validation.evidence,
+      storedAt: new Date().toISOString()
+    });
+    return json(request, env, result, { status: result.created ? 201 : 200 });
+  } catch (error) {
+    const integrityFailure = error instanceof ExternalEvidenceIntegrityError;
+    console.error(integrityFailure ? "external_evidence_integrity_failed" : "external_evidence_create_failed", {
+      message: error?.message || "External evidence creation failed."
+    });
+    return json(request, env, {
+      ok: false,
+      error: integrityFailure ? error.code : "external_evidence_create_failed",
+      message: integrityFailure
+        ? "Stored external evidence failed integrity verification."
+        : "External evidence creation failed."
+    }, { status: 500 });
+  }
+}
+
+async function handleReadSeabassExternalEvidence(request, env, pathname) {
+  if (!hasD1(env)) {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+  const routePrefix = "/evidence/seabass/";
+  let evidenceId;
+  try {
+    evidenceId = decodeURIComponent(pathname.slice(routePrefix.length));
+  } catch {
+    return json(request, env, { ok: false, error: "invalid_external_evidence_id" }, { status: 400 });
+  }
+  const payloadHash = evidenceId.startsWith(SEABASS_EXTERNAL_EVIDENCE_ID_PREFIX)
+    ? evidenceId.slice(SEABASS_EXTERNAL_EVIDENCE_ID_PREFIX.length)
+    : "";
+  if (!/^[0-9a-f]{64}$/.test(payloadHash)) {
+    return json(request, env, { ok: false, error: "invalid_external_evidence_id" }, { status: 400 });
+  }
+
+  try {
+    const result = await readStoredSeabassExternalEvidence(env.WANOKU_INTEL_D1, evidenceId);
+    if (!result.found) {
+      return json(request, env, { ok: false, error: "external_evidence_not_found" }, { status: 404 });
+    }
+    return json(request, env, {
+      evidenceId: result.evidenceId,
+      payloadHash: result.payloadHash,
+      storedAt: result.storedAt,
+      evidence: result.evidence
+    });
+  } catch (error) {
+    const integrityFailure = error instanceof ExternalEvidenceIntegrityError;
+    console.error(integrityFailure ? "external_evidence_integrity_failed" : "external_evidence_read_failed", {
+      message: error?.message || "External evidence read failed."
+    });
+    return json(request, env, {
+      ok: false,
+      error: integrityFailure ? error.code : "external_evidence_read_failed",
+      message: integrityFailure
+        ? "Stored external evidence failed integrity verification."
+        : "External evidence read failed."
+    }, { status: 500 });
+  }
+}
+
 async function readAdminJsonBody(request, maxBytes) {
   const contentType = request.headers.get("Content-Type") || "";
   if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
@@ -1990,6 +2091,10 @@ async function handleRequest(request, env) {
     return handleCreateSeabassPredictionSnapshot(request, env);
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/evidence/seabass") {
+    return handleCreateSeabassExternalEvidence(request, env);
+  }
+
   if (request.method !== "GET") {
     return json(request, env, { error: "method_not_allowed" }, { status: 405 });
   }
@@ -2004,6 +2109,7 @@ async function handleRequest(request, env) {
         "/sources",
         "/intel",
         "/evidence",
+        "/evidence/seabass/:id",
         "/predictions",
         "/environment/nodes",
         "/environment/current",
@@ -2017,7 +2123,8 @@ async function handleRequest(request, env) {
         "/predictions/seabass/snapshots/:id",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction",
-        "POST /admin/predictions/seabass/snapshots"
+        "POST /admin/predictions/seabass/snapshots",
+        "POST /admin/evidence/seabass"
       ]
     });
   }
@@ -2030,6 +2137,9 @@ async function handleRequest(request, env) {
       duplicateCandidates: duplicateCandidates(),
       note: "fixture/mock only; no production SNS API connection."
     });
+  }
+  if (url.pathname.startsWith("/evidence/seabass/")) {
+    return handleReadSeabassExternalEvidence(request, env, url.pathname);
   }
   if (url.pathname === "/predictions") {
     return json(request, env, { prediction: mockPredictions() });
