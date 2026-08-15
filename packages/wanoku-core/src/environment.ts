@@ -200,8 +200,14 @@ export function calculateMissingRate(
   return calculateMissingFields(snapshot, fields).length / fields.length;
 }
 
-export function calculateDataFreshness(snapshot: Pick<EnvironmentalSnapshot, "observedAt" | "collectedAt" | "forecastIssuedAt">, asOf: string | Date = new Date()): number {
-  const basisMs = Math.max(parseTime(snapshot.observedAt), parseTime(snapshot.collectedAt), parseTime(snapshot.forecastIssuedAt));
+export function calculateDataFreshness(
+  snapshot: Pick<EnvironmentalSnapshot, "observedAt" | "collectedAt" | "forecastIssuedAt">,
+  asOf: string | Date = new Date(),
+  options: { basis?: "latest-event" | "collected-at" } = {}
+): number {
+  const basisMs = options.basis === "collected-at"
+    ? parseTime(snapshot.collectedAt)
+    : Math.max(parseTime(snapshot.observedAt), parseTime(snapshot.collectedAt), parseTime(snapshot.forecastIssuedAt));
   const asOfMs = typeof asOf === "string" ? Date.parse(asOf) : asOf.getTime();
   if (!Number.isFinite(basisMs) || !Number.isFinite(asOfMs)) return 0;
   const ageHours = Math.max(0, (asOfMs - basisMs) / 3600_000);
@@ -210,10 +216,13 @@ export function calculateDataFreshness(snapshot: Pick<EnvironmentalSnapshot, "ob
 
 export function calculateEnvironmentalQuality(
   snapshot: EnvironmentalSnapshot,
-  asOf: string | Date = new Date()
+  asOf: string | Date = new Date(),
+  options: { freshnessBasis?: "latest-event" | "collected-at" } = {}
 ): EnvironmentalQualityReport {
   const missingFields = Array.from(new Set([...snapshot.missingFields, ...calculateMissingFields(snapshot)]));
-  const freshness = Math.min(snapshot.freshness, calculateDataFreshness(snapshot, asOf));
+  const freshness = Math.min(snapshot.freshness, calculateDataFreshness(snapshot, asOf, {
+    basis: options.freshnessBasis
+  }));
   const missingRate = missingFields.length / ENVIRONMENTAL_REQUIRED_FIELDS.length;
   const warnings: string[] = [];
   if (freshness < 0.35) warnings.push("stale_environmental_data");

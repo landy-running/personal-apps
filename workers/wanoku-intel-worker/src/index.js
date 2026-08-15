@@ -1013,6 +1013,12 @@ async function readEnvironmentState(env, url) {
     };
   }
 
+  return readEnvironmentStateForTimes(env, node, asOf);
+}
+
+async function readEnvironmentStateForTimes(env, node, targetAt, knowledgeAt = null) {
+  const knowledgeCutoff = knowledgeAt ?? targetAt;
+
   const habitatGraph = createInitialHabitatGraph(
     TOKYO_BAY_ENVIRONMENT_NODES,
     ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT
@@ -1021,21 +1027,25 @@ async function readEnvironmentState(env, url) {
     habitatGraph,
     reviewedAt: ENVIRONMENT_STATE_JMA_MAPPING_REVIEWED_AT
   });
-  const activeMapping = activeJmaTidePredictionMappingForNode(mappingResult.mappings, node.id, asOf);
-  const environment = await readEnvironmentStateSnapshots(env, node.id, asOf);
-  const hydro = await readEnvironmentStateHydroCoastal(env, activeMapping, asOf);
-  const environmentalQualityReports = environment.snapshots.map((snapshot) => (
-    calculateEnvironmentalQuality(snapshot, asOf)
-  ));
-  const state = buildEnvironmentState({
+  const activeMapping = activeJmaTidePredictionMappingForNode(mappingResult.mappings, node.id, targetAt);
+  const environment = await readEnvironmentStateSnapshots(env, node.id, targetAt, knowledgeAt);
+  const hydro = await readEnvironmentStateHydroCoastal(env, activeMapping, targetAt, knowledgeCutoff);
+  const stateInput = {
     nodeId: node.id,
-    asOf,
+    asOf: targetAt,
     habitatGraph,
     environmentalSnapshots: environment.snapshots,
-    environmentalQualityReports,
     hydroCoastalObservations: hydro.observations,
     hydroCoastalStationNodeMappings: mappingResult.mappings
-  });
+  };
+  if (knowledgeAt == null) {
+    stateInput.environmentalQualityReports = environment.snapshots.map((snapshot) => (
+      calculateEnvironmentalQuality(snapshot, targetAt)
+    ));
+  } else {
+    stateInput.knowledgeAt = knowledgeAt;
+  }
+  const state = buildEnvironmentState(stateInput);
 
   return {
     status: 200,
@@ -1105,6 +1115,128 @@ async function readSeabassDecision(env, url) {
   };
 }
 
+async function readSeabassPredictionPreview(env, url) {
+  const nodeId = url.searchParams.get("nodeId") || url.searchParams.get("node_id");
+  if (!nodeId) {
+    return { status: 400, payload: { ok: false, error: "node_id_required" } };
+  }
+  const node = TOKYO_BAY_ENVIRONMENT_NODES.find((item) => item.id === nodeId);
+  if (!node) {
+    return { status: 400, payload: { ok: false, error: "invalid_node_id", nodeId } };
+  }
+
+  const knowledgeAt = url.searchParams.get("knowledgeAt");
+  const targetAt = url.searchParams.get("targetAt");
+  if (!isCanonicalUtcIsoDateTime(knowledgeAt)) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "invalid_knowledge_at", message: "knowledgeAt must be canonical UTC ISO datetime." }
+    };
+  }
+  if (!isCanonicalUtcIsoDateTime(targetAt)) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "invalid_target_at", message: "targetAt must be canonical UTC ISO datetime." }
+    };
+  }
+  if (Date.parse(knowledgeAt) > Date.parse(targetAt)) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "knowledge_after_target", message: "knowledgeAt must be <= targetAt." }
+    };
+  }
+
+  const environmentResult = await readEnvironmentStateForTimes(env, node, targetAt, knowledgeAt);
+  const seabass = buildSeabassStateForEnvironmentPayload(environmentResult.payload);
+  const decision = buildSeabassDecision(seabass.state);
+  const preview = buildSeabassPredictionPreview({
+    environmentState: environmentResult.payload,
+    habitatState: seabass.habitat.state,
+    seabassState: seabass.state,
+    decision,
+    knowledgeAt,
+    targetAt
+  });
+  return {
+    status: 200,
+    payload: {
+      ...preview,
+      source: environmentResult.payload.source,
+      dbConfigured: environmentResult.payload.dbConfigured,
+      readDiagnostics: environmentResult.payload.readDiagnostics
+    }
+  };
+}
+
+function buildSeabassPredictionPreview({
+  environmentState,
+  habitatState,
+  seabassState,
+  decision,
+  knowledgeAt,
+  targetAt
+}) {
+  return {
+    schemaVersion: "wanoku-seabass-prediction-preview.v1",
+    species: { id: decision.species.id },
+    nodeId: decision.nodeId,
+    knowledgeAt,
+    targetAt,
+    leadHours: hoursBetween(knowledgeAt, targetAt),
+    decision: { ...decision.decision },
+    axes: { ...decision.axes },
+    environmentSummary: {
+      tide: { ...environmentState.tide },
+      atmosphere: { ...environmentState.atmosphere },
+      marine: { ...environmentState.marine }
+    },
+    habitatSummary: {
+      context: { ...habitatState.context },
+      hydrodynamics: { ...habitatState.hydrodynamics },
+      exposure: { ...habitatState.exposure },
+      freshwater: { ...habitatState.freshwater },
+      disturbance: { ...habitatState.disturbance }
+    },
+    quality: {
+      sourceAgeAtKnowledge: {
+        atmosphereHours: environmentState.freshness.atmosphere.ageHours,
+        marineHours: sourceAgeHours(environmentState.marine.sourceCollectedAt, knowledgeAt),
+        tideHours: environmentState.freshness.tide.ageHours
+      },
+      staleInputs: [...seabassState.quality.staleInputs],
+      missingInputs: [...seabassState.quality.missingInputs],
+      unknownDerivedComponents: [...seabassState.quality.unknownDerivedComponents]
+    },
+    provenance: {
+      environmentStateSchemaVersion: environmentState.schemaVersion,
+      habitatStateSchemaVersion: habitatState.schemaVersion,
+      seabassStateSchemaVersion: seabassState.schemaVersion,
+      decisionSchemaVersion: decision.schemaVersion,
+      ruleVersions: {
+        habitat: habitatState.provenance.derivations[0]?.ruleVersion ?? null,
+        seabass: seabassState.provenance.derivations[0]?.ruleVersion ?? null,
+        decision: decision.provenance.ruleVersion
+      }
+    },
+    diagnostics: {
+      environmentalErrors: [...environmentState.diagnostics.environmentalErrors],
+      environmentalWarnings: [...environmentState.diagnostics.environmentalWarnings],
+      hydroCoastalErrors: [...environmentState.diagnostics.hydroCoastalErrors],
+      hydroCoastalWarnings: [...environmentState.diagnostics.hydroCoastalWarnings],
+      habitatUnknownStateReasons: habitatState.diagnostics.unknownStateReasons.map((entry) => ({
+        field: entry.field,
+        reasons: [...entry.reasons]
+      })),
+      seabassUnknownAxisReasons: seabassState.diagnostics.unknownAxisReasons.map((entry) => ({
+        field: entry.field,
+        reasons: [...entry.reasons]
+      })),
+      decisionRule: decision.diagnostics.matchedRule,
+      decisionIntegrityFailures: [...decision.diagnostics.integrityFailures]
+    }
+  };
+}
+
 function buildSeabassStateForEnvironmentPayload(environmentPayload) {
   const habitat = buildHabitatStateForEnvironmentPayload(environmentPayload);
   return {
@@ -1134,24 +1266,32 @@ function buildHabitatStateForEnvironmentPayload(environmentPayload) {
   };
 }
 
-async function readEnvironmentStateSnapshots(env, nodeId, asOf) {
+async function readEnvironmentStateSnapshots(env, nodeId, targetAt, knowledgeAt = null) {
   if (!hasD1(env)) {
     return { snapshots: fixtureEnvironmentSnapshots(nodeId), source: "fixture", dbConfigured: false };
   }
 
+  const knowledgeCutoff = knowledgeAt ?? targetAt;
+  const forecastCutoffSql = knowledgeAt == null
+    ? ""
+    : "AND (forecast_issued_at IS NULL OR forecast_issued_at <= ?)";
+  const binds = knowledgeAt == null
+    ? [nodeId, targetAt, knowledgeCutoff, 500]
+    : [nodeId, targetAt, knowledgeCutoff, knowledgeCutoff, 500];
   const rows = await env.WANOKU_INTEL_D1.prepare(`
     SELECT snapshot_key, normalized_json, collected_at, forecast_issued_at, created_at
     FROM environmental_snapshots
     WHERE node_id = ?
       AND observed_at <= ?
       AND collected_at <= ?
+      ${forecastCutoffSql}
     ORDER BY COALESCE(collected_at, forecast_issued_at, created_at) DESC, observed_at DESC, created_at DESC
     LIMIT ?
-  `).bind(nodeId, asOf, asOf, 500).all();
+  `).bind(...binds).all();
   return { snapshots: rowsToSnapshots(rows), source: "d1", dbConfigured: true };
 }
 
-async function readEnvironmentStateHydroCoastal(env, activeMapping, asOf) {
+async function readEnvironmentStateHydroCoastal(env, activeMapping, targetAt, knowledgeAt = targetAt) {
   if (!hasD1(env)) {
     return {
       observations: [],
@@ -1166,9 +1306,9 @@ async function readEnvironmentStateHydroCoastal(env, activeMapping, asOf) {
     providerId: "jma-tide-prediction",
     stationId: activeMapping?.stationId,
     metric: "predicted-tide-level",
-    observedStart: hoursFromIso(asOf, -ENVIRONMENT_STATE_HYDRO_LOOKBACK_HOURS),
-    observedEnd: hoursFromIso(asOf, 1),
-    calculatedAt: asOf,
+    observedStart: hoursFromIso(targetAt, -ENVIRONMENT_STATE_HYDRO_LOOKBACK_HOURS),
+    observedEnd: hoursFromIso(targetAt, 1),
+    calculatedAt: knowledgeAt,
     limit: 24
   });
 }
@@ -1191,6 +1331,15 @@ function isMappingActiveAt(mapping, asOf) {
 
 function hoursFromIso(value, hours) {
   return new Date(Date.parse(value) + hours * 3_600_000).toISOString();
+}
+
+function hoursBetween(start, end) {
+  return round((Date.parse(end) - Date.parse(start)) / 3_600_000, 6);
+}
+
+function sourceAgeHours(sourceTimestamp, knowledgeAt) {
+  if (!sourceTimestamp) return null;
+  return round(Math.max(0, (Date.parse(knowledgeAt) - Date.parse(sourceTimestamp)) / 3_600_000), 6);
 }
 
 export function rowsToSnapshots(rows) {
@@ -1734,6 +1883,7 @@ async function handleRequest(request, env) {
         "/habitat/state",
         "/species/seabass/state",
         "/species/seabass/decision",
+        "/species/seabass/prediction-preview",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction"
       ]
@@ -1790,6 +1940,10 @@ async function handleRequest(request, env) {
   }
   if (url.pathname === "/species/seabass/decision") {
     const result = await readSeabassDecision(env, url);
+    return json(request, env, result.payload, { status: result.status });
+  }
+  if (url.pathname === "/species/seabass/prediction-preview") {
+    const result = await readSeabassPredictionPreview(env, url);
     return json(request, env, result.payload, { status: result.status });
   }
 

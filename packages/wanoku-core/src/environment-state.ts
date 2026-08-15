@@ -111,6 +111,7 @@ export type EnvironmentState = {
 export type BuildEnvironmentStateInput = {
   nodeId: string;
   asOf: string;
+  knowledgeAt?: string;
   habitatGraph: HabitatGraph;
   environmentalSnapshots?: readonly EnvironmentalSnapshot[];
   environmentalQualityReports?: readonly EnvironmentalQualityReport[];
@@ -135,6 +136,14 @@ const STATE_COMPONENTS = [
   "marine.seaLevelM"
 ] as const;
 
+const ATMOSPHERE_FEATURE_FIELDS = [
+  "windSpeedMps",
+  "windDirectionDeg",
+  "precipitationMm",
+  "pressureHpa",
+  "airTemperatureC"
+] as const;
+
 const MARINE_FEATURE_FIELDS = [
   "waterTemperatureC",
   "waveHeightM",
@@ -145,10 +154,25 @@ const MARINE_FEATURE_FIELDS = [
   "seaLevelM"
 ] as const;
 
+const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const FORECAST_ENVIRONMENTAL_PROVIDERS = new Set([
+  "open-meteo-weather",
+  "open-meteo-marine"
+]);
+
 export function buildEnvironmentState(input: BuildEnvironmentStateInput): EnvironmentState {
-  const environmentalSnapshots = input.environmentalSnapshots ?? [];
-  const environmentalQualityReports = input.environmentalQualityReports
-    ?? environmentalSnapshots.map((snapshot) => calculateEnvironmentalQuality(snapshot, input.asOf));
+  const predictionMode = input.knowledgeAt !== undefined;
+  const knowledgeAt = input.knowledgeAt ?? input.asOf;
+  const temporalSelection = predictionMode
+    ? selectPredictionEnvironmentalSnapshots(input.environmentalSnapshots ?? [], input.asOf, knowledgeAt)
+    : applyDefaultForecastIssuanceCutoff(input.environmentalSnapshots ?? [], input.asOf);
+  const environmentalSnapshots = temporalSelection.snapshots;
+  const environmentalQualityReports = predictionMode
+    ? environmentalSnapshots.map((snapshot) => calculateEnvironmentalQuality(snapshot, knowledgeAt, {
+        freshnessBasis: "collected-at"
+      }))
+    : input.environmentalQualityReports
+      ?? environmentalSnapshots.map((snapshot) => calculateEnvironmentalQuality(snapshot, input.asOf));
   const environmentalFeature = buildNodeEnvironmentalFeatures({
     nodeId: input.nodeId,
     snapshots: environmentalSnapshots,
@@ -157,10 +181,10 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
   });
 
   const hydroCoastalResult = buildHydroCoastalFeatureSet({
-    observations: input.hydroCoastalObservations ?? [],
+    observations: temporalSelection.valid ? input.hydroCoastalObservations ?? [] : [],
     mappings: input.hydroCoastalStationNodeMappings ?? [],
     habitatGraph: input.habitatGraph,
-    calculatedAt: input.asOf,
+    calculatedAt: knowledgeAt,
     targetAt: input.asOf
   });
   const hydroCoastalFeature = hydroCoastalResult.features.find((feature) => feature.nodeId === input.nodeId) ?? null;
@@ -176,14 +200,18 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
     sourceCollectedAt: hydroCoastalFeature?.sourceCollectedAt ?? null,
     forecastIssuedAt: hydroCoastalFeature?.forecastIssuedAt ?? null
   };
+  const atmosphereSource = componentSourceMetadata(
+    environmentalFeature.provenance,
+    ATMOSPHERE_FEATURE_FIELDS
+  );
   const atmosphere: EnvironmentStateAtmosphere = {
     windSpeedMps: environmentalFeature.windSpeedMps,
     windDirectionDeg: environmentalFeature.windDirectionDeg,
     precipitationMm: environmentalFeature.precipitationMm,
     pressureHpa: environmentalFeature.pressureHpa,
     airTemperatureC: environmentalFeature.airTemperatureC,
-    sourceCollectedAt: environmentalFeature.sourceCollectedAt,
-    sourceProviderIds: environmentalFeature.sourceProviderIds
+    sourceCollectedAt: atmosphereSource.sourceCollectedAt,
+    sourceProviderIds: atmosphereSource.sourceProviderIds
   };
   const marineSource = componentSourceMetadata(environmentalFeature.provenance, MARINE_FEATURE_FIELDS);
   const marine: EnvironmentStateMarine = {
@@ -212,7 +240,7 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
     freshness: {
       atmosphere: {
         sourceTimestamp: atmosphere.sourceCollectedAt,
-        ageHours: ageHours(atmosphere.sourceCollectedAt, input.asOf),
+        ageHours: ageHours(atmosphere.sourceCollectedAt, knowledgeAt),
         freshness: environmentalFeature.freshness,
         stale: environmentalFeature.dataQuality.qualityReportCount > 0
           ? environmentalFeature.dataQuality.staleCount > 0
@@ -220,7 +248,7 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
       },
       tide: {
         sourceTimestamp: tide.sourceCollectedAt,
-        ageHours: ageHours(tide.sourceCollectedAt, input.asOf),
+        ageHours: ageHours(tide.sourceCollectedAt, knowledgeAt),
         freshness: null,
         stale: null
       },
@@ -245,8 +273,14 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
       tide: hydroCoastalFeature?.provenance ?? []
     },
     diagnostics: {
-      environmentalErrors: environmentalFeature.errors,
-      environmentalWarnings: environmentalFeature.warnings,
+      environmentalErrors: unique([
+        ...temporalSelection.errors,
+        ...environmentalFeature.errors
+      ]),
+      environmentalWarnings: unique([
+        ...temporalSelection.warnings,
+        ...environmentalFeature.warnings
+      ]),
       hydroCoastalErrors: unique([
         ...hydroCoastalResult.errors,
         ...(hydroCoastalFeature?.errors ?? [])
@@ -258,6 +292,114 @@ export function buildEnvironmentState(input: BuildEnvironmentStateInput): Enviro
       tideMissingReasons: hydroCoastalFeature?.missingReasons ?? []
     }
   };
+}
+
+function applyDefaultForecastIssuanceCutoff(
+  snapshots: readonly EnvironmentalSnapshot[],
+  asOf: string
+): { snapshots: EnvironmentalSnapshot[]; errors: string[]; warnings: string[]; valid: boolean } {
+  if (!isCanonicalUtcIsoDateTime(asOf)) {
+    return { snapshots: [...snapshots], errors: [], warnings: [], valid: true };
+  }
+  const asOfMs = Date.parse(asOf);
+  const warnings: string[] = [];
+  const eligible = snapshots.filter((snapshot) => {
+    if (snapshot.forecastIssuedAt == null) return true;
+    const forecastIssuedAtMs = Date.parse(snapshot.forecastIssuedAt);
+    if (!Number.isFinite(forecastIssuedAtMs) || forecastIssuedAtMs <= asOfMs) return true;
+    warnings.push(`Future snapshot excluded: ${environmentalSnapshotLabel(snapshot)} forecastIssuedAt is after calculatedAt.`);
+    return false;
+  });
+  return { snapshots: eligible, errors: [], warnings, valid: true };
+}
+
+function selectPredictionEnvironmentalSnapshots(
+  snapshots: readonly EnvironmentalSnapshot[],
+  targetAt: string,
+  knowledgeAt: string
+): { snapshots: EnvironmentalSnapshot[]; errors: string[]; warnings: string[]; valid: boolean } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (!isCanonicalUtcIsoDateTime(targetAt)) errors.push("targetAt must be canonical UTC ISO datetime.");
+  if (!isCanonicalUtcIsoDateTime(knowledgeAt)) errors.push("knowledgeAt must be canonical UTC ISO datetime.");
+  if (errors.length) return { snapshots: [], errors, warnings, valid: false };
+
+  const targetAtMs = Date.parse(targetAt);
+  const knowledgeAtMs = Date.parse(knowledgeAt);
+  if (knowledgeAtMs > targetAtMs) {
+    errors.push("knowledgeAt must be <= targetAt.");
+    return { snapshots: [], errors, warnings, valid: false };
+  }
+
+  const eligible: EnvironmentalSnapshot[] = [];
+  for (const snapshot of snapshots) {
+    const label = environmentalSnapshotLabel(snapshot);
+    const observedAtMs = Date.parse(snapshot.observedAt);
+    const collectedAtMs = Date.parse(snapshot.collectedAt);
+    const forecastIssuedAtMs = snapshot.forecastIssuedAt == null
+      ? null
+      : Date.parse(snapshot.forecastIssuedAt);
+    if (!Number.isFinite(observedAtMs) || !Number.isFinite(collectedAtMs) || (
+      forecastIssuedAtMs != null && !Number.isFinite(forecastIssuedAtMs)
+    )) {
+      errors.push(`Prediction snapshot excluded because temporal fields are invalid: ${label}.`);
+      continue;
+    }
+    if (observedAtMs > targetAtMs) {
+      warnings.push(`Prediction snapshot excluded because observedAt is after targetAt: ${label}.`);
+      continue;
+    }
+    if (collectedAtMs > knowledgeAtMs) {
+      warnings.push(`Prediction snapshot excluded because collectedAt is after knowledgeAt: ${label}.`);
+      continue;
+    }
+    if (forecastIssuedAtMs != null && forecastIssuedAtMs > knowledgeAtMs) {
+      warnings.push(`Prediction snapshot excluded because forecastIssuedAt is after knowledgeAt: ${label}.`);
+      continue;
+    }
+    if (observedAtMs > knowledgeAtMs && !FORECAST_ENVIRONMENTAL_PROVIDERS.has(snapshot.source)) {
+      warnings.push(`Prediction future target excluded because provider forecast semantics are unsupported: ${label}.`);
+      continue;
+    }
+    eligible.push(snapshot);
+  }
+
+  const byIdentity = new Map<string, EnvironmentalSnapshot[]>();
+  for (const snapshot of eligible) {
+    const key = environmentalPredictionIdentity(snapshot);
+    byIdentity.set(key, [...(byIdentity.get(key) ?? []), snapshot]);
+  }
+
+  const selected: EnvironmentalSnapshot[] = [];
+  for (const [identity, revisions] of byIdentity.entries()) {
+    const latestCollectedAt = Math.max(...revisions.map((snapshot) => Date.parse(snapshot.collectedAt)));
+    const latest = revisions.filter((snapshot) => Date.parse(snapshot.collectedAt) === latestCollectedAt);
+    selected.push(...latest);
+    if (latest.length < revisions.length) {
+      warnings.push(`Older prediction snapshot revision excluded at knowledgeAt: ${identity}.`);
+    }
+  }
+
+  return { snapshots: selected, errors, warnings, valid: true };
+}
+
+function environmentalPredictionIdentity(snapshot: EnvironmentalSnapshot): string {
+  return [
+    snapshot.nodeId ?? "unknown-node",
+    snapshot.source || "unknown-source",
+    snapshot.observedAt,
+    snapshot.forecastIssuedAt ?? "none"
+  ].join("|");
+}
+
+function environmentalSnapshotLabel(snapshot: EnvironmentalSnapshot): string {
+  return `${environmentalPredictionIdentity(snapshot)}|${snapshot.collectedAt}`;
+}
+
+function isCanonicalUtcIsoDateTime(value: unknown): value is string {
+  if (typeof value !== "string" || !CANONICAL_UTC_ISO_DATETIME.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 export function tidePhaseFromTrend(trend: TideTrendDirection): EnvironmentStateTidePhase {

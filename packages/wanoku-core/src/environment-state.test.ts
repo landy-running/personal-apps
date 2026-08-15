@@ -20,6 +20,7 @@ const NEXT_TARGET_AT = "2026-07-13T07:00:00.000Z";
 const LOOKBACK_1H = "2026-07-13T05:00:00.000Z";
 const COLLECTED_AT = "2026-07-13T04:00:00.000Z";
 const FORECAST_ISSUED_AT = "2025-02-21T06:21:31.000Z";
+const KNOWLEDGE_AT = "2026-07-13T04:00:00.000Z";
 
 describe("Wanoku Environment State v1", () => {
   it("is deterministic for the same input data and asOf", () => {
@@ -78,6 +79,53 @@ describe("Wanoku Environment State v1", () => {
     }
   });
 
+  it("scopes atmosphere and marine source metadata to their adopted fields", () => {
+    const targetAt = "2026-07-13T15:00:00.000Z";
+    const knowledgeAt = "2026-07-13T09:00:00.000Z";
+    const weatherCollectedAt = "2026-07-13T08:00:00.000Z";
+    const marineCollectedAt = "2026-07-13T09:00:00.000Z";
+    const state = buildEnvironmentState({
+      nodeId: "tokyo-inner-bay-01",
+      asOf: targetAt,
+      knowledgeAt,
+      habitatGraph: graph(),
+      environmentalSnapshots: [
+        snapshot({
+          observedAt: targetAt,
+          collectedAt: weatherCollectedAt,
+          forecastIssuedAt: weatherCollectedAt,
+          source: "open-meteo-weather"
+        }),
+        snapshot({
+          observedAt: targetAt,
+          collectedAt: marineCollectedAt,
+          forecastIssuedAt: marineCollectedAt,
+          source: "open-meteo-marine",
+          windSpeed: undefined,
+          windDirection: undefined,
+          pressure: undefined,
+          precipitation: undefined,
+          airTemperature: undefined,
+          seaSurfaceTemperature: 24.6,
+          waveHeight: 0.7,
+          wavePeriod: 5.5,
+          waveDirection: 120,
+          oceanCurrentVelocity: 0.4,
+          oceanCurrentDirection: 95,
+          seaLevelHeightMsl: 0.18
+        })
+      ],
+      hydroCoastalObservations: [],
+      hydroCoastalStationNodeMappings: mappings()
+    });
+
+    expect(state.atmosphere.sourceCollectedAt).toBe(weatherCollectedAt);
+    expect(state.atmosphere.sourceProviderIds).toEqual(["open-meteo-weather"]);
+    expect(state.freshness.atmosphere.ageHours).toBe(1);
+    expect(state.marine.sourceCollectedAt).toBe(marineCollectedAt);
+    expect(state.marine.sourceProviderIds).toEqual(["open-meteo-marine"]);
+  });
+
   it("uses the correct environmental and tide value for different asOf timestamps", () => {
     const base = {
       nodeId: "tokyo-inner-bay-01",
@@ -127,6 +175,27 @@ describe("Wanoku Environment State v1", () => {
     ]));
     expect(state.diagnostics.hydroCoastalWarnings).toEqual(expect.arrayContaining([
       expect.stringContaining("future hydro-coastal revision excluded")
+    ]));
+  });
+
+  it("uses asOf as the default forecast issuance knowledge cutoff", () => {
+    const state = buildEnvironmentState({
+      nodeId: "tokyo-inner-bay-01",
+      asOf: TARGET_AT,
+      habitatGraph: graph(),
+      environmentalSnapshots: [snapshot({
+        observedAt: LOOKBACK_1H,
+        collectedAt: COLLECTED_AT,
+        forecastIssuedAt: NEXT_TARGET_AT,
+        windSpeed: 99
+      })],
+      hydroCoastalObservations: [],
+      hydroCoastalStationNodeMappings: mappings()
+    });
+
+    expect(state.atmosphere.windSpeedMps).toBeNull();
+    expect(state.diagnostics.environmentalWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("forecastIssuedAt is after calculatedAt")
     ]));
   });
 
@@ -254,7 +323,150 @@ describe("Wanoku Environment State v1", () => {
     expect(state.tide.stationId).toBe("QS");
     expect(state.diagnostics.tideMissingReasons).toContain("no-target-observation");
   });
+
+  it("is deterministic when targetAt and knowledgeAt are separated", () => {
+    const input = predictionInput({
+      environmentalSnapshots: [snapshot({ observedAt: TARGET_AT, collectedAt: COLLECTED_AT })],
+      hydroCoastalObservations: [
+        observation("TK", TARGET_AT, 100),
+        observation("TK", LOOKBACK_1H, 90)
+      ]
+    });
+
+    expect(buildEnvironmentState(input)).toEqual(buildEnvironmentState(input));
+  });
+
+  it("uses future-target Open-Meteo rows already collected by knowledgeAt", () => {
+    const state = buildEnvironmentState(predictionInput({
+      environmentalSnapshots: [snapshot({
+        observedAt: TARGET_AT,
+        collectedAt: COLLECTED_AT,
+        source: "open-meteo-weather",
+        windSpeed: 7
+      })]
+    }));
+
+    expect(state.atmosphere.windSpeedMps).toBe(7);
+    expect(state.diagnostics.environmentalWarnings).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("provider forecast semantics are unsupported")
+    ]));
+  });
+
+  it("does not treat an unsupported provider's future target as a forecast", () => {
+    const state = buildEnvironmentState(predictionInput({
+      environmentalSnapshots: [snapshot({
+        observedAt: TARGET_AT,
+        collectedAt: COLLECTED_AT,
+        source: "unverified-environment-provider",
+        windSpeed: 99
+      })]
+    }));
+
+    expect(state.atmosphere.windSpeedMps).toBeNull();
+    expect(state.diagnostics.environmentalWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("provider forecast semantics are unsupported")
+    ]));
+  });
+
+  it("excludes environmental revisions collected after knowledgeAt and selects the latest eligible revision", () => {
+    const state = buildEnvironmentState(predictionInput({
+      environmentalSnapshots: [
+        snapshot({ observedAt: TARGET_AT, collectedAt: "2026-07-13T03:00:00.000Z", windSpeed: 4 }),
+        snapshot({ observedAt: TARGET_AT, collectedAt: KNOWLEDGE_AT, windSpeed: 7 }),
+        snapshot({ observedAt: TARGET_AT, collectedAt: "2026-07-13T04:30:00.000Z", windSpeed: 99 })
+      ]
+    }));
+
+    expect(state.atmosphere.windSpeedMps).toBe(7);
+    expect(state.diagnostics.environmentalWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("collectedAt is after knowledgeAt"),
+      expect.stringContaining("Older prediction snapshot revision excluded")
+    ]));
+  });
+
+  it("uses JMA future tide targets available by knowledgeAt and selects the latest eligible revision", () => {
+    const state = buildEnvironmentState(predictionInput({
+      hydroCoastalObservations: [
+        observation("TK", TARGET_AT, 95, { collectedAt: "2026-07-13T03:00:00.000Z" }),
+        observation("TK", TARGET_AT, 100, { collectedAt: KNOWLEDGE_AT }),
+        observation("TK", TARGET_AT, 999, { collectedAt: "2026-07-13T04:30:00.000Z" }),
+        observation("TK", LOOKBACK_1H, 90, { collectedAt: KNOWLEDGE_AT })
+      ]
+    }));
+
+    expect(state.tide).toMatchObject({
+      levelCm: 100,
+      slopeCmPerHour: 10,
+      phase: "rising",
+      sourceCollectedAt: KNOWLEDGE_AT,
+      forecastIssuedAt: FORECAST_ISSUED_AT
+    });
+    expect(state.diagnostics.hydroCoastalWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("future hydro-coastal revision excluded")
+    ]));
+  });
+
+  it("excludes JMA rows issued after knowledgeAt", () => {
+    const futureIssuedAt = "2026-07-13T04:30:00.000Z";
+    const state = buildEnvironmentState(predictionInput({
+      hydroCoastalObservations: [
+        observation("TK", TARGET_AT, 999, {
+          forecastIssuedAt: futureIssuedAt,
+          collectedAt: "2026-07-13T04:45:00.000Z"
+        }),
+        observation("TK", LOOKBACK_1H, 90)
+      ]
+    }));
+
+    expect(state.tide.levelCm).toBeNull();
+    expect(state.diagnostics.hydroCoastalWarnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("future hydro-coastal revision excluded")
+    ]));
+  });
+
+  it("calculates source age and environmental freshness at knowledgeAt", () => {
+    const knowledgeAt = "2026-07-13T05:00:00.000Z";
+    const state = buildEnvironmentState({
+      ...predictionInput({
+        environmentalSnapshots: [snapshot({
+          observedAt: TARGET_AT,
+          collectedAt: "2026-07-13T03:00:00.000Z",
+          freshness: 1
+        })]
+      }),
+      knowledgeAt
+    });
+
+    expect(state.freshness.atmosphere.ageHours).toBe(2);
+    expect(state.freshness.atmosphere.freshness).toBeCloseTo(Math.exp(-2 / 18), 6);
+  });
+
+  it("derives tide trend from targetAt and lookback only", () => {
+    const state = buildEnvironmentState(predictionInput({
+      hydroCoastalObservations: [
+        observation("TK", TARGET_AT, 100),
+        observation("TK", LOOKBACK_1H, 90),
+        observation("TK", NEXT_TARGET_AT, 999)
+      ]
+    }));
+
+    expect(state.tide.slopeCmPerHour).toBe(10);
+    expect(state.tide.phase).toBe("rising");
+  });
 });
+
+function predictionInput(overrides: Partial<Parameters<typeof buildEnvironmentState>[0]> = {}) {
+  return {
+    nodeId: "tokyo-inner-bay-01",
+    asOf: TARGET_AT,
+    knowledgeAt: KNOWLEDGE_AT,
+    habitatGraph: graph(),
+    environmentalSnapshots: [],
+    hydroCoastalObservations: [],
+    hydroCoastalStationNodeMappings: mappings(),
+    ...overrides
+  };
+}
 
 function stateForTide(targetValue: number, lookbackValue: number) {
   return buildEnvironmentState({
