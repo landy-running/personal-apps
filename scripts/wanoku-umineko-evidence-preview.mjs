@@ -13,6 +13,7 @@ export const UMINEKO_SOURCE_CLASS = "charter-or-guide-log";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const UMINEKO_HOST = "umineko.biz";
 const MAX_RECENT = 10;
+const MAX_DISCOVERY_RECORDS = 50;
 const FETCH_DELAY_MS = 200;
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const EXTRACTOR_VERSION = "wanoku-umineko-evidence-adapter.v1";
@@ -86,8 +87,8 @@ function extractWordPressPostId(html) {
 
 export function discoverUminekoRecords(html, limit = MAX_RECENT) {
   if (typeof html !== "string") throw new UminekoEvidencePreviewError("invalid_html", "listing HTML must be a string.");
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECENT) {
-    throw new UminekoEvidencePreviewError("invalid_limit", `recent must be an integer from 1 to ${MAX_RECENT}.`);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_DISCOVERY_RECORDS) {
+    throw new UminekoEvidencePreviewError("invalid_limit", `discovery limit must be an integer from 1 to ${MAX_DISCOVERY_RECORDS}.`);
   }
 
   const records = [];
@@ -135,24 +136,8 @@ export async function parseUminekoDetail({ html, url, collectedAt }) {
   const ignoredSpecies = OTHER_SPECIES.filter((species) => species.pattern.test(bodyText)).map((species) => species.id);
   const diagnostics = [];
   if (sourceRecordIdentity.slugFallback) diagnostics.push("source-record-id-slug-fallback");
-  const catchCandidates = extractSeabassCatchCandidates(title, bodyText);
-
-  if (catchCandidates.length === 0) {
-    diagnostics.push("no-japanese-seabass-catch-evidence");
-    return { source, parsedEvents: [], ignoredSpecies, diagnostics };
-  }
-  if (catchCandidates.length > 1) {
-    diagnostics.push("multiple-seabass-events-unresolved");
-    return { source, parsedEvents: [], ignoredSpecies, diagnostics };
-  }
-
   const eventDate = extractEventDate(title, bodyText);
   const publicationDate = extractPublicationDate(html);
-  if (!eventDate) diagnostics.push("event-date-missing");
-  if (!publicationDate) diagnostics.push("publication-time-unknown");
-  if (!eventDate) return { source, parsedEvents: [], ignoredSpecies, diagnostics };
-
-  const eventTime = eventIntervalFromJstDate(eventDate, canonicalCollectedAt);
   const publication = publicationTimeFromHtml(html, publicationDate, canonicalCollectedAt);
   const locationInference = inferUminekoLocation(text);
   const duration = extractDuration(bodyText);
@@ -160,6 +145,36 @@ export async function parseUminekoDetail({ html, url, collectedAt }) {
   const captainCatchCount = extractCaptainCatchCount(bodyText);
   const anglerCount = guestCount === null ? null : guestCount + (captainCatchCount === null ? 0 : 1);
   const targetSpeciesExplicit = extractTargetSpeciesExplicit(title, bodyText);
+  const auditSignals = {
+    seabassMentioned: /シーバス/u.test(text),
+    seabassTargeted: targetSpeciesExplicit,
+    explicitZeroCatch: false,
+    durationMinutes: duration.minutes,
+    anglerCount,
+    eventDate,
+    eventTimePrecision: eventDate ? "day-only" : "unknown",
+    publicationDate,
+    publicationTimePrecision: publication.at ? (publication.conservative ? "day-only" : "exact") : "unknown",
+    sourceLocationMentioned: locationInference.sourceReported.rawLabel !== null,
+    sourceLocationLabel: locationInference.sourceReported.rawLabel,
+    locationInference
+  };
+  const catchCandidates = extractSeabassCatchCandidates(title, bodyText);
+
+  if (catchCandidates.length === 0) {
+    diagnostics.push("no-japanese-seabass-catch-evidence");
+    return { source, parsedEvents: [], ignoredSpecies, diagnostics, auditSignals };
+  }
+  if (catchCandidates.length > 1) {
+    diagnostics.push("multiple-seabass-events-unresolved");
+    return { source, parsedEvents: [], ignoredSpecies, diagnostics, auditSignals };
+  }
+
+  if (!eventDate) diagnostics.push("event-date-missing");
+  if (!publicationDate) diagnostics.push("publication-time-unknown");
+  if (!eventDate) return { source, parsedEvents: [], ignoredSpecies, diagnostics, auditSignals };
+
+  const eventTime = eventIntervalFromJstDate(eventDate, canonicalCollectedAt);
   const effortKnown = duration.minutes !== null || anglerCount !== null;
   const qualityFlags = ["event-time-day-only"];
   if (/(?:ナイト|夜便)/u.test(text)) qualityFlags.push("event-daypart-night-explicit");
@@ -231,7 +246,8 @@ export async function parseUminekoDetail({ html, url, collectedAt }) {
       extractionDiagnostics
     }],
     ignoredSpecies,
-    diagnostics
+    diagnostics,
+    auditSignals
   };
 }
 
@@ -262,7 +278,7 @@ export function formatUminekoPreview(result) {
   return JSON.stringify(result, null, 2);
 }
 
-async function fetchUminekoHtml(value, fetchImpl) {
+export async function fetchUminekoHtml(value, fetchImpl) {
   const url = assertUminekoUrl(value);
   const response = await fetchImpl(url.href, {
     method: "GET",
