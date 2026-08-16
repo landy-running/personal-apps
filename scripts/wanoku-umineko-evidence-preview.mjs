@@ -185,7 +185,7 @@ export async function parseUminekoDetail({ html, url, collectedAt }) {
   if (!effortKnown) qualityFlags.push("effort-unknown");
 
   const input = {
-    schemaVersion: "wanoku-seabass-external-evidence.v1",
+    schemaVersion: "wanoku-seabass-external-evidence.v1.1",
     species: { id: "japanese-seabass", scientificName: "Lateolabrax japonicus" },
     evidenceType: "catch",
     eventStartAt: eventTime.startAt,
@@ -196,6 +196,14 @@ export async function parseUminekoDetail({ html, url, collectedAt }) {
     catchOutcome: "positive",
     directFishEvidence: true,
     catchCount: catchCandidates[0].count,
+    interaction: {
+      present: null,
+      count: null,
+      countLowerBound: null,
+      biteMentioned: false,
+      chaseMentioned: false,
+      lostFishMentioned: false
+    },
     effort: {
       known: effortKnown,
       durationMinutes: duration.minutes,

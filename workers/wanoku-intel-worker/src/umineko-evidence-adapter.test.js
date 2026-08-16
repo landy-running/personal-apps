@@ -122,9 +122,18 @@ describe("Wanoku Umineko External Evidence Adapter Preview v1", () => {
 
   it("parses the 2026-07-14-like result as 29 seabass catches", async () => {
     const event = firstEvent(await parse(july14Fixture()));
+    expect(event.externalEvidencePayload.schemaVersion).toBe("wanoku-seabass-external-evidence.v1.1");
     expect(event.externalEvidencePayload.catchCount).toBe(29);
     expect(event.externalEvidencePayload.evidenceType).toBe("catch");
     expect(event.externalEvidencePayload.directFishEvidence).toBe(true);
+    expect(event.externalEvidencePayload.interaction).toEqual({
+      present: null,
+      count: null,
+      countLowerBound: null,
+      biteMentioned: false,
+      chaseMentioned: false,
+      lostFishMentioned: false
+    });
     expect(event.extractionDiagnostics.sizeText).toBe("30〜48cmまで");
   });
 

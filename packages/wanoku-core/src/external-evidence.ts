@@ -3,7 +3,7 @@ import {
   JAPANESE_SEABASS_SPECIES_ID
 } from "./seabass-state";
 
-export const SEABASS_EXTERNAL_EVIDENCE_SCHEMA_VERSION = "wanoku-seabass-external-evidence.v1";
+export const SEABASS_EXTERNAL_EVIDENCE_SCHEMA_VERSION = "wanoku-seabass-external-evidence.v1.1";
 export const JAPANESE_SEABASS_EXTERNAL_EVIDENCE_SPECIES_ID = JAPANESE_SEABASS_SPECIES_ID;
 
 export const SEABASS_EXTERNAL_EVIDENCE_TYPES = [
@@ -56,6 +56,14 @@ export type SeabassExternalEvidenceMappingStatus = typeof SEABASS_EXTERNAL_EVIDE
 export type SeabassExternalEvidenceQualityFlag = typeof SEABASS_EXTERNAL_EVIDENCE_QUALITY_FLAGS[number];
 export type SeabassExternalEvidencePresenceSupport = "positive" | "none";
 export type SeabassExternalEvidenceCatchOutcome = "positive" | "explicit-zero" | "unknown";
+export type SeabassExternalEvidenceInteraction = {
+  present: true | null;
+  count: number | null;
+  countLowerBound: number | null;
+  biteMentioned: boolean;
+  chaseMentioned: boolean;
+  lostFishMentioned: boolean;
+};
 
 export type SeabassExternalEvidenceInput = {
   schemaVersion: typeof SEABASS_EXTERNAL_EVIDENCE_SCHEMA_VERSION;
@@ -72,6 +80,7 @@ export type SeabassExternalEvidenceInput = {
   catchOutcome: SeabassExternalEvidenceCatchOutcome;
   directFishEvidence: boolean;
   catchCount: number | null;
+  interaction: SeabassExternalEvidenceInteraction;
   effort: {
     known: boolean;
     durationMinutes: number | null;
@@ -126,6 +135,7 @@ export type SeabassEvidenceSemanticContent = {
   catchOutcome: SeabassExternalEvidenceCatchOutcome;
   directFishEvidence: boolean;
   catchCount: number | null;
+  interaction: SeabassExternalEvidenceInteraction;
   effort: SeabassExternalEvidence["effort"];
   location: SeabassExternalEvidence["location"];
   qualityFlags: SeabassExternalEvidenceQualityFlag[];
@@ -151,6 +161,7 @@ const TOP_LEVEL_FIELDS = [
   "catchOutcome",
   "directFishEvidence",
   "catchCount",
+  "interaction",
   "effort",
   "location",
   "source",
@@ -177,6 +188,7 @@ export function buildSeabassExternalEvidence(
   if (!includes(SEABASS_EXTERNAL_EVIDENCE_TYPES, value.evidenceType)) errors.push("evidenceType is invalid.");
   validateTemporalFields(value, errors);
   validateEvidenceSemantics(value, errors);
+  validateInteraction(value.interaction, value, errors);
   validateEffort(value.effort, value.evidenceType, errors);
   validateLocation(value.location, knownNodeIds, errors);
   validateSource(value.source, errors);
@@ -202,6 +214,7 @@ export function buildSeabassExternalEvidence(
     catchOutcome: input.catchOutcome,
     directFishEvidence: input.directFishEvidence,
     catchCount: input.catchCount,
+    interaction: { ...input.interaction },
     effort: { ...input.effort },
     location: {
       ...input.location,
@@ -237,6 +250,7 @@ export function buildSeabassEvidenceSemanticContent(
     catchOutcome: evidence.catchOutcome,
     directFishEvidence: evidence.directFishEvidence,
     catchCount: evidence.catchCount,
+    interaction: { ...evidence.interaction },
     effort: { ...evidence.effort },
     location: {
       ...evidence.location,
@@ -320,11 +334,19 @@ function validateEvidenceSemantics(value: Record<string, unknown>, errors: strin
     if (value.catchOutcome !== "positive") errors.push("catch evidence requires catchOutcome positive.");
     if (value.directFishEvidence !== true) errors.push("positive catch evidence requires directFishEvidence true.");
   }
-  if (["fish-observation", "bite-or-contact", "survey-detection"].includes(String(value.evidenceType))) {
+  if (["fish-observation", "survey-detection"].includes(String(value.evidenceType))) {
     if (value.presenceSupport !== "positive") errors.push(`${String(value.evidenceType)} requires presenceSupport positive.`);
     if (value.catchOutcome !== "unknown") errors.push(`${String(value.evidenceType)} requires catchOutcome unknown.`);
     if (value.directFishEvidence !== true) errors.push(`${String(value.evidenceType)} requires directFishEvidence true.`);
     if (value.catchCount !== null) errors.push(`${String(value.evidenceType)} requires catchCount null.`);
+  }
+  if (value.evidenceType === "bite-or-contact") {
+    if (value.presenceSupport !== "positive") errors.push("bite-or-contact requires presenceSupport positive.");
+    if (value.catchOutcome !== "unknown") errors.push("bite-or-contact requires catchOutcome unknown.");
+    if (value.directFishEvidence !== true) errors.push("bite-or-contact requires directFishEvidence true.");
+    if (value.catchCount !== null && value.catchCount !== 0) {
+      errors.push("bite-or-contact catchCount must be null or explicit landed zero.");
+    }
   }
   if (
     value.evidenceType === "bite-or-contact"
@@ -339,6 +361,75 @@ function validateEvidenceSemantics(value: Record<string, unknown>, errors: strin
     if (value.catchCount !== 0) errors.push("explicit-effort-zero-catch requires catchCount 0.");
     if (value.presenceSupport !== "none") errors.push("explicit-effort-zero-catch requires presenceSupport none.");
     if (value.directFishEvidence !== false) errors.push("explicit-effort-zero-catch requires directFishEvidence false.");
+  }
+}
+
+function validateInteraction(
+  value: unknown,
+  evidence: Record<string, unknown>,
+  errors: string[]
+): void {
+  if (!isRecord(value)) {
+    errors.push("interaction must be an object.");
+    return;
+  }
+  const fields = [
+    "present",
+    "count",
+    "countLowerBound",
+    "biteMentioned",
+    "chaseMentioned",
+    "lostFishMentioned"
+  ] as const;
+  rejectUnsupportedFields(value, fields, "interaction", errors);
+  requireFields(value, fields, "interaction", errors);
+
+  if (value.present !== true && value.present !== null) {
+    errors.push("interaction.present must be true or null; false is not supported.");
+  }
+  if (value.count !== null && (!Number.isInteger(value.count) || Number(value.count) <= 0)) {
+    errors.push("interaction.count must be null or a positive integer.");
+  }
+  if (
+    value.countLowerBound !== null
+    && (!Number.isInteger(value.countLowerBound) || Number(value.countLowerBound) <= 0)
+  ) {
+    errors.push("interaction.countLowerBound must be null or a positive integer.");
+  }
+  if (value.count !== null && value.countLowerBound !== null) {
+    errors.push("interaction.count and countLowerBound cannot both be non-null.");
+  }
+  for (const field of ["biteMentioned", "chaseMentioned", "lostFishMentioned"] as const) {
+    if (typeof value[field] !== "boolean") errors.push(`interaction.${field} must be boolean.`);
+  }
+
+  const hasPositiveDetail = (
+    Number(value.count) > 0
+    || Number(value.countLowerBound) > 0
+    || value.biteMentioned === true
+    || value.chaseMentioned === true
+    || value.lostFishMentioned === true
+  );
+  if (hasPositiveDetail && value.present !== true) {
+    errors.push("positive interaction details require interaction.present true.");
+  }
+  const preservesExplicitZeroSemantics = evidence.evidenceType === "explicit-effort-zero-catch";
+  if (value.present === true && !preservesExplicitZeroSemantics) {
+    if (evidence.presenceSupport !== "positive") {
+      errors.push("positive interaction requires presenceSupport positive.");
+    }
+    if (evidence.directFishEvidence !== true) {
+      errors.push("positive interaction requires directFishEvidence true.");
+    }
+    if (
+      Array.isArray(evidence.qualityFlags)
+      && evidence.qualityFlags.includes("species-identification-unverified")
+    ) {
+      errors.push("positive interaction requires explicit Japanese seabass attribution.");
+    }
+  }
+  if (evidence.evidenceType === "bite-or-contact" && value.present !== true) {
+    errors.push("bite-or-contact requires interaction.present true.");
   }
 }
 

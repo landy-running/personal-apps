@@ -293,6 +293,7 @@ export {
   type SeabassExternalEvidenceCatchOutcome,
   type SeabassExternalEvidenceExtractionMethod,
   type SeabassExternalEvidenceInput,
+  type SeabassExternalEvidenceInteraction,
   type SeabassExternalEvidenceMappingMethod,
   type SeabassExternalEvidenceMappingStatus,
   type SeabassExternalEvidencePresenceSupport,

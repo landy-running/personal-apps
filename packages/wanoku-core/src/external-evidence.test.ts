@@ -13,7 +13,7 @@ const PUBLISHED_AT = "2026-08-15T06:00:00.000Z";
 const COLLECTED_AT = "2026-08-15T09:00:00.000Z";
 const KNOWN_NODES = ["makuhari-shallow-01"];
 
-describe("Wanoku External Evidence Foundation v1 contract", () => {
+describe("Wanoku External Evidence Foundation v1.1 contract", () => {
   it("preserves distinct event, publication, and Wanoku collection times", () => {
     const result = build(sampleEvidence());
 
@@ -100,6 +100,210 @@ describe("Wanoku External Evidence Foundation v1 contract", () => {
     });
   });
 
+  it("requires an explicit interaction block and accepts unknown interaction", () => {
+    const unknown = sampleEvidence();
+    expect(build(unknown)).toMatchObject({
+      valid: true,
+      evidence: {
+        interaction: {
+          present: null,
+          count: null,
+          countLowerBound: null,
+          biteMentioned: false,
+          chaseMentioned: false,
+          lostFishMentioned: false
+        }
+      }
+    });
+
+    const omitted = sampleEvidence() as unknown as Record<string, unknown>;
+    delete omitted.interaction;
+    expect(build(omitted).errors).toContain("evidence.interaction is required.");
+  });
+
+  it.each([
+    "present",
+    "count",
+    "countLowerBound",
+    "biteMentioned",
+    "chaseMentioned",
+    "lostFishMentioned"
+  ])("rejects an omitted interaction.%s field instead of creating an alternate canonical shape", (field) => {
+    const value = sampleEvidence() as unknown as { interaction: Record<string, unknown> };
+    delete value.interaction[field];
+
+    expect(build(value).errors).toContain(`interaction.${field} is required.`);
+  });
+
+  it("accepts positive interaction without a quantitative count", () => {
+    const value = sampleEvidence();
+    value.interaction.present = true;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: { interaction: { present: true, count: null, countLowerBound: null } }
+    });
+  });
+
+  it("keeps exact interaction count distinct from a lower bound", () => {
+    const exact = sampleEvidence();
+    exact.interaction.present = true;
+    exact.interaction.count = 5;
+    const lowerBound = sampleEvidence();
+    lowerBound.interaction.present = true;
+    lowerBound.interaction.countLowerBound = 20;
+
+    expect(build(exact)).toMatchObject({ valid: true, evidence: { interaction: { count: 5, countLowerBound: null } } });
+    expect(build(lowerBound)).toMatchObject({ valid: true, evidence: { interaction: { count: null, countLowerBound: 20 } } });
+  });
+
+  it("rejects simultaneous exact and lower-bound interaction counts", () => {
+    const value = sampleEvidence();
+    value.interaction.present = true;
+    value.interaction.count = 5;
+    value.interaction.countLowerBound = 5;
+
+    expect(build(value).errors).toContain("interaction.count and countLowerBound cannot both be non-null.");
+  });
+
+  it.each([
+    ["count", 0],
+    ["count", -1],
+    ["countLowerBound", 0],
+    ["countLowerBound", -1]
+  ])("rejects non-positive interaction.%s value %s", (field, invalidValue) => {
+    const value = sampleEvidence();
+    value.interaction.present = true;
+    (value.interaction as Record<string, unknown>)[field] = invalidValue;
+
+    expect(build(value).valid).toBe(false);
+  });
+
+  it.each([
+    ["exact count", (value: ReturnType<typeof sampleEvidence>) => { value.interaction.count = 5; }],
+    ["lower-bound count", (value: ReturnType<typeof sampleEvidence>) => { value.interaction.countLowerBound = 20; }],
+    ["bite", (value: ReturnType<typeof sampleEvidence>) => { value.interaction.biteMentioned = true; }],
+    ["chase", (value: ReturnType<typeof sampleEvidence>) => { value.interaction.chaseMentioned = true; }],
+    ["lost fish", (value: ReturnType<typeof sampleEvidence>) => { value.interaction.lostFishMentioned = true; }]
+  ])("requires interaction.present true for positive %s detail", (_label, mutate) => {
+    const value = sampleEvidence();
+    mutate(value);
+
+    expect(build(value).errors).toContain("positive interaction details require interaction.present true.");
+  });
+
+  it("rejects interaction.present false instead of inferring a negative", () => {
+    const value = sampleEvidence() as unknown as { interaction: Record<string, unknown> };
+    value.interaction.present = false;
+
+    expect(build(value).errors).toContain("interaction.present must be true or null; false is not supported.");
+  });
+
+  it("represents Kachidoki-like 5hit 4get in one catch payload", () => {
+    const value = sampleEvidence();
+    value.catchCount = 4;
+    value.interaction.present = true;
+    value.interaction.count = 5;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: {
+        evidenceType: "catch",
+        catchOutcome: "positive",
+        catchCount: 4,
+        interaction: { present: true, count: 5, countLowerBound: null }
+      }
+    });
+  });
+
+  it("represents Kachidoki-like 20HIT以上 9GET without making the hit count exact", () => {
+    const value = sampleEvidence();
+    value.catchCount = 9;
+    value.interaction.present = true;
+    value.interaction.countLowerBound = 20;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: { catchCount: 9, interaction: { count: null, countLowerBound: 20 } }
+    });
+  });
+
+  it("represents nonnumeric many-hits evidence as present with unknown count", () => {
+    const value = sampleEvidence();
+    value.interaction.present = true;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: { interaction: { present: true, count: null, countLowerBound: null } }
+    });
+  });
+
+  it("keeps lost fish independent from landed catch count", () => {
+    const value = sampleEvidence();
+    value.catchCount = 4;
+    value.interaction.present = true;
+    value.interaction.lostFishMentioned = true;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: { catchCount: 4, interaction: { lostFishMentioned: true } }
+    });
+  });
+
+  it("leaves interaction unknown when catch is known but hit detail is absent", () => {
+    expect(build(sampleEvidence())).toMatchObject({
+      valid: true,
+      evidence: { catchCount: 1, interaction: { present: null, count: null } }
+    });
+  });
+
+  it("allows explicit landed zero with positive interaction without claiming fish absence", () => {
+    const value = sampleEvidence();
+    value.evidenceType = "bite-or-contact";
+    value.catchOutcome = "unknown";
+    value.catchCount = 0;
+    value.interaction.present = true;
+    value.interaction.count = 5;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: {
+        evidenceType: "bite-or-contact",
+        presenceSupport: "positive",
+        catchOutcome: "unknown",
+        directFishEvidence: true,
+        catchCount: 0,
+        interaction: { present: true, count: 5 }
+      }
+    });
+  });
+
+  it("does not infer negative interaction from explicit effort-zero catch", () => {
+    expect(build(explicitZeroEvidence())).toMatchObject({
+      valid: true,
+      evidence: { catchCount: 0, interaction: { present: null } }
+    });
+  });
+
+  it("allows explicit effort-zero catch to coexist with confirmed positive interaction", () => {
+    const value = explicitZeroEvidence();
+    value.interaction.present = true;
+    value.interaction.count = 5;
+    value.interaction.biteMentioned = true;
+
+    expect(build(value)).toMatchObject({
+      valid: true,
+      evidence: {
+        evidenceType: "explicit-effort-zero-catch",
+        presenceSupport: "none",
+        catchOutcome: "explicit-zero",
+        directFishEvidence: false,
+        catchCount: 0,
+        interaction: { present: true, count: 5, biteMentioned: true }
+      }
+    });
+  });
+
   it.each(["fish-observation", "bite-or-contact", "survey-detection"])(
     "accepts positive %s evidence without inventing a catch count",
     (evidenceType) => {
@@ -107,6 +311,7 @@ describe("Wanoku External Evidence Foundation v1 contract", () => {
       value.evidenceType = evidenceType;
       value.catchOutcome = "unknown";
       value.catchCount = null;
+      if (evidenceType === "bite-or-contact") value.interaction.present = true;
 
       expect(build(value)).toMatchObject({
         valid: true,
@@ -121,14 +326,18 @@ describe("Wanoku External Evidence Foundation v1 contract", () => {
     }
   );
 
-  it("rejects bite-or-contact when Japanese seabass identification is unverified", () => {
+  it("rejects unknown-species contact as Japanese seabass interaction evidence", () => {
     const value = sampleEvidence();
     value.evidenceType = "bite-or-contact";
     value.catchOutcome = "unknown";
     value.catchCount = null;
+    value.interaction.present = true;
     value.qualityFlags.push("species-identification-unverified");
 
-    expect(build(value).errors).toContain("bite-or-contact requires explicit Japanese seabass attribution.");
+    expect(build(value).errors).toEqual(expect.arrayContaining([
+      "bite-or-contact requires explicit Japanese seabass attribution.",
+      "positive interaction requires explicit Japanese seabass attribution."
+    ]));
   });
 
   it("accepts explicit effort with zero catch without claiming fish absence", () => {
@@ -254,6 +463,15 @@ describe("Wanoku External Evidence Foundation v1 contract", () => {
     expect(build(scored).errors).toContain("evidence.confidence is not supported.");
   });
 
+  it("rejects a v1 payload instead of silently reinterpreting it as v1.1", () => {
+    const value = sampleEvidence() as unknown as Record<string, unknown>;
+    value.schemaVersion = "wanoku-seabass-external-evidence.v1";
+
+    expect(build(value).errors).toContain(
+      "schemaVersion must be wanoku-seabass-external-evidence.v1.1."
+    );
+  });
+
   it("derives source identity from provider, record, and event key, not URL", () => {
     const first = sampleEvidence();
     const second = sampleEvidence();
@@ -315,6 +533,14 @@ describe("Wanoku External Evidence Foundation v1 contract", () => {
       },
       evidenceType: "catch",
       catchCount: 1,
+      interaction: {
+        present: null,
+        count: null,
+        countLowerBound: null,
+        biteMentioned: false,
+        chaseMentioned: false,
+        lostFishMentioned: false
+      },
       qualityFlags: ["effort-unknown"]
     });
     expect(semantic).not.toHaveProperty("collectedAt");
@@ -344,6 +570,14 @@ function sampleEvidence() {
     catchOutcome: "positive",
     directFishEvidence: true,
     catchCount: 1 as number | null,
+    interaction: {
+      present: null as true | null,
+      count: null as number | null,
+      countLowerBound: null as number | null,
+      biteMentioned: false,
+      chaseMentioned: false,
+      lostFishMentioned: false
+    },
     effort: {
       known: false,
       durationMinutes: null as number | null,

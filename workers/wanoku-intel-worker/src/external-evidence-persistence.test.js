@@ -27,7 +27,7 @@ const COLLECTED_AT = "2026-08-15T09:00:00.000Z";
 const STORED_AT = "2026-08-15T09:00:01.000Z";
 const ADMIN_SECRET = "test-secret";
 
-describe("External Evidence Foundation v1 canonical record", () => {
+describe("External Evidence Foundation v1.1 canonical record", () => {
   it("canonicalizes object key order while preserving array order", async () => {
     const evidence = validEvidence();
     const reordered = reverseObjectKeys(evidence);
@@ -81,6 +81,14 @@ describe("External Evidence Foundation v1 canonical record", () => {
       .toBe((await hashSeabassExternalEvidence(validEvidence())).evidenceId);
   });
 
+  it("keeps the same semantic hash when only extractionMethod changes", async () => {
+    const changedInput = sampleEvidenceInput();
+    changedInput.provenance.extractionMethod = "deterministic-parser";
+
+    expect((await hashSeabassExternalEvidence(validatedEvidence(changedInput))).evidenceId)
+      .toBe((await hashSeabassExternalEvidence(validEvidence())).evidenceId);
+  });
+
   it("keeps the same semantic hash when only mappingVersion changes", async () => {
     const changedInput = sampleEvidenceInput();
     changedInput.provenance.mappingVersion = "wanoku-evidence-mapping.v2";
@@ -100,6 +108,10 @@ describe("External Evidence Foundation v1 canonical record", () => {
 
   it.each([
     ["catchCount", (input) => { input.catchCount = 2; }],
+    ["interaction", (input) => {
+      input.interaction.present = true;
+      input.interaction.count = 5;
+    }],
     ["eventStartAt", (input) => { input.eventStartAt = "2026-08-15T03:30:00.000Z"; }],
     ["location", (input) => {
       input.location.rawLabel = "Funabashi inner";
@@ -115,6 +127,43 @@ describe("External Evidence Foundation v1 canonical record", () => {
 
     expect((await hashSeabassExternalEvidence(validatedEvidence(changedInput))).evidenceId)
       .not.toBe((await hashSeabassExternalEvidence(validEvidence())).evidenceId);
+  });
+
+  it("changes the semantic hash when only the interaction count is corrected", async () => {
+    const firstInput = sampleEvidenceInput();
+    firstInput.interaction.present = true;
+    firstInput.interaction.count = 5;
+    const secondInput = structuredClone(firstInput);
+    secondInput.interaction.count = 6;
+    const first = validatedEvidence(firstInput);
+    const second = validatedEvidence(secondInput);
+
+    expect(second.sourceIdentity).toBe(first.sourceIdentity);
+    expect((await hashSeabassExternalEvidence(second)).evidenceId)
+      .not.toBe((await hashSeabassExternalEvidence(first)).evidenceId);
+  });
+
+  it.each([
+    ["present", true],
+    ["count", 5],
+    ["countLowerBound", 20],
+    ["biteMentioned", true],
+    ["chaseMentioned", true],
+    ["lostFishMentioned", true]
+  ])("includes interaction.%s in the semantic hash without changing source identity", async (field, changedValue) => {
+    const firstInput = sampleEvidenceInput();
+    const secondInput = structuredClone(firstInput);
+    if (field !== "present") {
+      firstInput.interaction.present = true;
+      secondInput.interaction.present = true;
+    }
+    secondInput.interaction[field] = changedValue;
+    const first = validatedEvidence(firstInput);
+    const second = validatedEvidence(secondInput);
+
+    expect(second.sourceIdentity).toBe(first.sourceIdentity);
+    expect((await hashSeabassExternalEvidence(second)).evidenceId)
+      .not.toBe((await hashSeabassExternalEvidence(first)).evidenceId);
   });
 
   it("separates parallel source events while keeping revisions on one source identity", async () => {
@@ -149,7 +198,7 @@ describe("External Evidence Foundation v1 canonical record", () => {
   });
 });
 
-describe("External Evidence Foundation v1 migration", () => {
+describe("External Evidence Foundation v1.1 existing schema", () => {
   it("creates one table and three bounded indexes without destructive SQL", () => {
     expect(MIGRATION_0005).toContain("CREATE TABLE IF NOT EXISTS seabass_external_evidence");
     expect(MIGRATION_0005).toContain("payload_hash TEXT NOT NULL UNIQUE");
@@ -204,11 +253,15 @@ print(json.dumps({"columns": columns, "indexes": indexes}))
   });
 });
 
-describe("External Evidence Foundation v1 repository", () => {
+describe("External Evidence Foundation v1.1 repository", () => {
   it("plain-inserts once and treats an exact retry as idempotent", async () => {
     const db = new EvidenceD1();
-    const first = await persist(db, validEvidence(), STORED_AT);
-    const second = await persist(db, validEvidence(), "2026-08-15T09:00:02.000Z");
+    const input = sampleEvidenceInput();
+    input.interaction.present = true;
+    input.interaction.count = 5;
+    const evidence = validatedEvidence(input);
+    const first = await persist(db, evidence, STORED_AT);
+    const second = await persist(db, evidence, "2026-08-15T09:00:02.000Z");
 
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
@@ -216,6 +269,17 @@ describe("External Evidence Foundation v1 repository", () => {
     expect(second.storedAt).toBe(STORED_AT);
     expect(db.evidenceRows).toHaveLength(1);
     expect(db.writeStatements).toHaveLength(1);
+  });
+
+  it("rejects an invalid interaction before any persistence access", async () => {
+    const db = new EvidenceD1();
+    const invalid = validEvidence();
+    invalid.interaction.present = false;
+
+    await expect(persist(db, invalid, STORED_AT)).rejects.toBeInstanceOf(ExternalEvidenceIntegrityError);
+    expect(db.prepared).toHaveLength(0);
+    expect(db.evidenceRows).toHaveLength(0);
+    expect(db.writeStatements).toHaveLength(0);
   });
 
   it("treats changed collection metadata as the same content and preserves first-known metadata", async () => {
@@ -275,6 +339,26 @@ describe("External Evidence Foundation v1 repository", () => {
     ]);
   });
 
+  it("stores an interaction correction as a second semantic version on the same source identity", async () => {
+    const db = new EvidenceD1();
+    const original = validEvidence();
+    const revisionInput = sampleEvidenceInput();
+    revisionInput.interaction.present = true;
+    revisionInput.interaction.count = 5;
+    revisionInput.collectedAt = "2026-08-15T10:00:00.000Z";
+    const revision = validatedEvidence(revisionInput);
+
+    const first = await persist(db, original, STORED_AT);
+    const second = await persist(db, revision, "2026-08-15T10:00:01.000Z");
+
+    expect(second.created).toBe(true);
+    expect(second.evidenceId).not.toBe(first.evidenceId);
+    expect(second.evidence.sourceIdentity).toBe(first.evidence.sourceIdentity);
+    expect(second.evidence.interaction).toMatchObject({ present: true, count: 5 });
+    expect(db.evidenceRows).toHaveLength(2);
+    expect(db.writeStatements).toHaveLength(2);
+  });
+
   it("recovers an exact concurrent insert race as created=false", async () => {
     const db = new EvidenceD1({ raceOnInsert: true });
     const result = await persist(db, validEvidence(), STORED_AT);
@@ -284,6 +368,20 @@ describe("External Evidence Foundation v1 repository", () => {
     expect(db.evidenceRows).toHaveLength(1);
     expect(db.writeStatements).toHaveLength(0);
     expect(db.prepared.filter((entry) => /FROM seabass_external_evidence/.test(entry.sql))).toHaveLength(2);
+  });
+
+  it("rejects a concurrent insert race whose stored content mismatches the candidate", async () => {
+    const db = new EvidenceD1({
+      raceOnInsert: (row) => ({
+        ...row,
+        payload_json: row.payload_json.replace('"catchCount":1', '"catchCount":2')
+      })
+    });
+
+    await expect(persist(db, validEvidence(), STORED_AT))
+      .rejects.toBeInstanceOf(ExternalEvidenceIntegrityError);
+    expect(db.evidenceRows).toHaveLength(1);
+    expect(db.writeStatements).toHaveLength(0);
   });
 
   it("uses plain INSERT and never generates overwrite or destructive SQL", async () => {
@@ -319,9 +417,32 @@ describe("External Evidence Foundation v1 repository", () => {
       .rejects.toBeInstanceOf(ExternalEvidenceIntegrityError);
     expect(db.writeStatements).toHaveLength(1);
   });
+
+  it("rejects a stored payload that violates the v1.1 interaction contract", async () => {
+    const db = new EvidenceD1();
+    const created = await persist(db, validEvidence(), STORED_AT);
+    db.evidenceRows[0].payload_json = db.evidenceRows[0].payload_json.replace('"present":null', '"present":false');
+
+    await expect(readSeabassExternalEvidence(db, created.evidenceId))
+      .rejects.toBeInstanceOf(ExternalEvidenceIntegrityError);
+    expect(db.writeStatements).toHaveLength(1);
+  });
+
+  it("detects a valid-looking interaction count mutation when the stored hash and ID are unchanged", async () => {
+    const db = new EvidenceD1();
+    const input = sampleEvidenceInput();
+    input.interaction.present = true;
+    input.interaction.count = 5;
+    const created = await persist(db, validatedEvidence(input), STORED_AT);
+    db.evidenceRows[0].payload_json = db.evidenceRows[0].payload_json.replace('"count":5', '"count":6');
+
+    await expect(readSeabassExternalEvidence(db, created.evidenceId))
+      .rejects.toBeInstanceOf(ExternalEvidenceIntegrityError);
+    expect(db.writeStatements).toHaveLength(1);
+  });
 });
 
-describe("External Evidence Foundation v1 API", () => {
+describe("External Evidence Foundation v1.1 API", () => {
   it("requires admin auth before body reads or D1 access", async () => {
     const db = new EvidenceD1();
     const request = createRequest(sampleEvidenceInput(), false);
@@ -389,6 +510,17 @@ describe("External Evidence Foundation v1 API", () => {
 
       expect(response.status).toBe(200);
       expect(body.evidence).toEqual(created.evidence);
+      expect(body.evidence).toMatchObject({
+        schemaVersion: "wanoku-seabass-external-evidence.v1.1",
+        interaction: {
+          present: null,
+          count: null,
+          countLowerBound: null,
+          biteMentioned: false,
+          chaseMentioned: false,
+          lostFishMentioned: false
+        }
+      });
       expect(reads).toHaveLength(1);
       expect(reads[0].sql).toContain("FROM seabass_external_evidence");
       expect(reads[0].sql).not.toMatch(/environmental_snapshots|prediction_snapshots/);
@@ -473,6 +605,14 @@ function sampleEvidenceInput() {
     catchOutcome: "positive",
     directFishEvidence: true,
     catchCount: 1,
+    interaction: {
+      present: null,
+      count: null,
+      countLowerBound: null,
+      biteMentioned: false,
+      chaseMentioned: false,
+      lostFishMentioned: false
+    },
     effort: {
       known: false,
       durationMinutes: null,
@@ -573,8 +713,9 @@ class EvidenceD1 {
             if (!/^INSERT INTO seabass_external_evidence/i.test(sql)) throw new Error("unexpected D1 write");
             const row = evidenceRowFromParams(params);
             if (db.raceOnInsert) {
+              const raceOnInsert = db.raceOnInsert;
               db.raceOnInsert = false;
-              db.evidenceRows.push(row);
+              db.evidenceRows.push(typeof raceOnInsert === "function" ? raceOnInsert(row) : row);
               throw new Error("D1_CONSTRAINT");
             }
             if (db.evidenceRows.some((item) => item.id === row.id || item.payload_hash === row.payload_hash)) {

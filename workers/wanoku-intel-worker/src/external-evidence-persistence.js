@@ -2,6 +2,7 @@ import { canonicalHydroCoastalJson } from "./hydro-coastal-persistence.js";
 import { sha256HexFromBytes } from "./jma-tide-prediction-ingestion.js";
 import {
   buildSeabassEvidenceSemanticContent,
+  buildSeabassExternalEvidence,
   seabassExternalEvidenceSourceIdentity
 } from "../../../packages/wanoku-core/src/external-evidence.ts";
 
@@ -93,7 +94,8 @@ export async function persistSeabassExternalEvidence(
   db,
   { evidence, storedAt, cryptoImpl = globalThis.crypto }
 ) {
-  const candidate = await materializeSeabassExternalEvidence(evidence, storedAt, cryptoImpl);
+  const validatedEvidence = validateEvidenceForPersistence(evidence);
+  const candidate = await materializeSeabassExternalEvidence(validatedEvidence, storedAt, cryptoImpl);
   const existingRows = await lookupEvidenceRows(db, candidate.id, candidate.payloadHash);
   if (existingRows.length > 0) return existingEvidenceResult(existingRows, candidate, cryptoImpl);
 
@@ -105,7 +107,7 @@ export async function persistSeabassExternalEvidence(
     throw error;
   }
 
-  return evidenceResult(candidate, evidence, true);
+  return evidenceResult(candidate, validatedEvidence, true);
 }
 
 export async function readSeabassExternalEvidence(db, evidenceId, cryptoImpl = globalThis.crypto) {
@@ -154,18 +156,20 @@ async function existingEvidenceResult(rows, candidate, cryptoImpl) {
 }
 
 async function verifyEvidenceRow(row, cryptoImpl) {
-  let evidence;
+  let storedPayload;
   try {
-    evidence = JSON.parse(row.payload_json);
+    storedPayload = JSON.parse(row.payload_json);
   } catch {
     throw new ExternalEvidenceIntegrityError("Stored external evidence payload is not valid JSON.");
   }
 
+  let evidence;
   let canonicalPayloadJson;
   let semanticJson;
   let payloadHash;
   let sourceIdentity;
   try {
+    evidence = validateEvidenceForPersistence(storedPayload);
     canonicalPayloadJson = canonicalExternalEvidencePayloadJson(evidence);
     semanticJson = canonicalExternalEvidenceJson(evidence);
     payloadHash = await sha256HexFromBytes(TEXT_ENCODER.encode(semanticJson), cryptoImpl);
@@ -203,6 +207,16 @@ async function verifyEvidenceRow(row, cryptoImpl) {
     throw new ExternalEvidenceIntegrityError("Stored external evidence query columns do not match its payload.");
   }
   return { evidence, canonicalPayloadJson, semanticJson, payloadHash };
+}
+
+function validateEvidenceForPersistence(evidence) {
+  const validationInput = { ...evidence };
+  delete validationInput.sourceIdentity;
+  const built = buildSeabassExternalEvidence(validationInput);
+  if (!built.valid || !built.evidence || built.evidence.sourceIdentity !== evidence?.sourceIdentity) {
+    throw new ExternalEvidenceIntegrityError("External evidence is not a valid canonical v1.1 payload.");
+  }
+  return built.evidence;
 }
 
 function evidenceResult(candidate, evidence, created, storedAt = candidate.storedAt) {
