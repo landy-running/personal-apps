@@ -205,23 +205,21 @@ export function buildKachidokiTripEvidence({ record, page, collectedAt }) {
     qualityFlags
   };
 
-  const modules = loadWanokuModules();
-  const validation = modules.buildSeabassExternalEvidence(input);
+  const validation = validateKachidokiExternalEvidenceInput(input);
   if (!validation.valid || !validation.evidence) {
     return {
       ok: false,
       diagnostics: [...diagnostics, "foundation-validation-failed", ...validation.errors.map((error) => `foundation:${error}`)]
     };
   }
-  const identity = semanticEvidenceIdentity(validation.evidence, modules);
   return {
     ok: true,
     trip: {
       sourceEventKey: record.sourceEventKey,
       externalEvidenceInput: input,
       canonicalEvidence: validation.evidence,
-      evidenceId: identity.evidenceId,
-      semanticHash: identity.semanticHash,
+      evidenceId: validation.evidenceId,
+      semanticHash: validation.semanticHash,
       adapterMetadata: {
         eventDate: record.eventDate,
         daypart: record.daypart,
@@ -232,6 +230,16 @@ export function buildKachidokiTripEvidence({ record, page, collectedAt }) {
       diagnostics
     }
   };
+}
+
+export function validateKachidokiExternalEvidenceInput(input) {
+  const modules = loadWanokuModules();
+  const validation = modules.buildSeabassExternalEvidence(input);
+  if (!validation.valid || !validation.evidence) {
+    return { ...validation, evidenceId: null, semanticHash: null };
+  }
+  const identity = semanticEvidenceIdentity(validation.evidence, modules);
+  return { ...validation, evidenceId: identity.evidenceId, semanticHash: identity.semanticHash };
 }
 
 function evidenceSemanticsForRecord(record) {
