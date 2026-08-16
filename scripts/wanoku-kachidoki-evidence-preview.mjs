@@ -110,12 +110,12 @@ export function buildKachidokiEvidencePreview({ html, url, sourceYear, sourceMon
     discoveredTripCount: page.entryCount,
     evidenceGeneratedCount: parsedTrips.length,
     skippedTripCount: ignoredTrips.length,
-    positiveCatchCount: parsedTrips.filter((trip) => trip.externalEvidencePayload.evidenceType === "catch").length,
-    explicitZeroCount: parsedTrips.filter((trip) => trip.externalEvidencePayload.evidenceType === "explicit-effort-zero-catch").length,
-    landedCatchTotal: parsedTrips.reduce((sum, trip) => sum + (trip.externalEvidencePayload.catchCount ?? 0), 0),
-    interactionExactCount: parsedTrips.filter((trip) => trip.externalEvidencePayload.interaction.count !== null).length,
-    interactionLowerBoundCount: parsedTrips.filter((trip) => trip.externalEvidencePayload.interaction.countLowerBound !== null).length,
-    interactionPresentCount: parsedTrips.filter((trip) => trip.externalEvidencePayload.interaction.present === true).length
+    positiveCatchCount: parsedTrips.filter((trip) => trip.canonicalEvidence.evidenceType === "catch").length,
+    explicitZeroCount: parsedTrips.filter((trip) => trip.canonicalEvidence.evidenceType === "explicit-effort-zero-catch").length,
+    landedCatchTotal: parsedTrips.reduce((sum, trip) => sum + (trip.canonicalEvidence.catchCount ?? 0), 0),
+    interactionExactCount: parsedTrips.filter((trip) => trip.canonicalEvidence.interaction.count !== null).length,
+    interactionLowerBoundCount: parsedTrips.filter((trip) => trip.canonicalEvidence.interaction.countLowerBound !== null).length,
+    interactionPresentCount: parsedTrips.filter((trip) => trip.canonicalEvidence.interaction.present === true).length
   };
 
   return {
@@ -218,7 +218,8 @@ export function buildKachidokiTripEvidence({ record, page, collectedAt }) {
     ok: true,
     trip: {
       sourceEventKey: record.sourceEventKey,
-      externalEvidencePayload: validation.evidence,
+      externalEvidenceInput: input,
+      canonicalEvidence: validation.evidence,
       evidenceId: identity.evidenceId,
       semanticHash: identity.semanticHash,
       adapterMetadata: {

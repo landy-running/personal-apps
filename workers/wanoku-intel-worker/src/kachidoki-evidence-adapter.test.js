@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { buildSeabassExternalEvidence } from "../../../packages/wanoku-core/src/external-evidence.ts";
 import { hashSeabassExternalEvidence } from "./external-evidence-persistence.js";
 import {
   KACHIDOKI_EVIDENCE_ADAPTER_VERSION,
@@ -23,7 +24,7 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
     const result = preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 5hit 4get")]);
 
     expect(result.source.sourceRecordId).toBe("post:5470");
-    expect(firstTrip(result).externalEvidencePayload.source.sourceRecordId).toBe("post:5470");
+    expect(firstTrip(result).canonicalEvidence.source.sourceRecordId).toBe("post:5470");
   });
 
   it("discovers trips only from figure.slide captions", () => {
@@ -63,7 +64,7 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
     const before = firstTrip(preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 5hit 4get")]));
     const after = firstTrip(preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 6hit 4get")]));
 
-    expect(after.externalEvidencePayload.sourceIdentity).toBe(before.externalEvidencePayload.sourceIdentity);
+    expect(after.canonicalEvidence.sourceIdentity).toBe(before.canonicalEvidence.sourceIdentity);
     expect(after.evidenceId).not.toBe(before.evidenceId);
   });
 
@@ -287,18 +288,35 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
     });
   });
 
-  it("always passes generated payload through the v1.1 Foundation builder", () => {
+  it("separates the exact admin create input from completed canonical Evidence", async () => {
     const result = firstTrip(preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 5hit 4get")]));
+    const validation = buildSeabassExternalEvidence(result.externalEvidenceInput);
+    const canonical = await hashSeabassExternalEvidence(validation.evidence);
 
-    expect(result.externalEvidencePayload.schemaVersion).toBe("wanoku-seabass-external-evidence.v1.1");
-    expect(result.externalEvidencePayload.sourceIdentity).toBe('["kachidoki-marina","post:5470","2026-06-24-night-seabass"]');
-    expect(result.semanticHash).toMatch(/^[0-9a-f]{64}$/u);
-    expect(result.evidenceId).toBe(`wanoku-seabass-evidence:${result.semanticHash}`);
+    expect(result.externalEvidenceInput).not.toHaveProperty("sourceIdentity");
+    expect(result.externalEvidenceInput).not.toHaveProperty("evidenceId");
+    expect(result.externalEvidenceInput).not.toHaveProperty("payloadHash");
+    expect(result.externalEvidenceInput).not.toHaveProperty("storedAt");
+    expect(result.externalEvidenceInput).not.toHaveProperty("created");
+    expect(result.canonicalEvidence.schemaVersion).toBe("wanoku-seabass-external-evidence.v1.1");
+    expect(result.canonicalEvidence.sourceIdentity).toBe('["kachidoki-marina","post:5470","2026-06-24-night-seabass"]');
+    expect(Object.keys(result.canonicalEvidence).filter((key) => !(key in result.externalEvidenceInput)))
+      .toEqual(["sourceIdentity"]);
+    expect(validation).toMatchObject({ valid: true, errors: [], warnings: [] });
+    expect(validation.evidence).toEqual(result.canonicalEvidence);
+    expect(result.externalEvidenceInput).toMatchObject({
+      catchCount: 4,
+      interaction: { present: true, count: 5, countLowerBound: null }
+    });
+    expect(canonical.payloadHash).toBe("b3ceb2bba24813621a3f0000b70a54c09f1dba06a1cc76318074309fe90b1ba2");
+    expect(canonical.evidenceId).toBe("wanoku-seabass-evidence:b3ceb2bba24813621a3f0000b70a54c09f1dba06a1cc76318074309fe90b1ba2");
+    expect(result.semanticHash).toBe(canonical.payloadHash);
+    expect(result.evidenceId).toBe(canonical.evidenceId);
   });
 
   it("matches the existing canonical External Evidence hash and ID implementation", async () => {
     const result = firstTrip(preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 5hit 4get")]));
-    const canonical = await hashSeabassExternalEvidence(result.externalEvidencePayload);
+    const canonical = await hashSeabassExternalEvidence(result.canonicalEvidence);
 
     expect(result.semanticHash).toBe(canonical.payloadHash);
     expect(result.evidenceId).toBe(canonical.evidenceId);
@@ -308,7 +326,7 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
     const five = firstTrip(preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 5hit 4get")]));
     const six = firstTrip(preview([trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 6hit 4get")]));
 
-    expect(six.externalEvidencePayload.sourceIdentity).toBe(five.externalEvidencePayload.sourceIdentity);
+    expect(six.canonicalEvidence.sourceIdentity).toBe(five.canonicalEvidence.sourceIdentity);
     expect(six.evidenceId).not.toBe(five.evidenceId);
   });
 
@@ -319,7 +337,8 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
       { collectedAt: "2026-08-17T02:00:00.000Z" }
     ));
 
-    expect(second.externalEvidencePayload.collectedAt).not.toBe(first.externalEvidencePayload.collectedAt);
+    expect(second.externalEvidenceInput).not.toHaveProperty("sourceIdentity");
+    expect(second.canonicalEvidence.collectedAt).not.toBe(first.canonicalEvidence.collectedAt);
     expect(second.evidenceId).toBe(first.evidenceId);
   });
 
@@ -360,8 +379,8 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
       entries: [trip("6/24（水）チョイノリ【NIGHT】<br>シーバス 5hit 4get")]
     })));
 
-    expect(second.externalEvidencePayload.publishedAt).toBeNull();
-    expect(second.externalEvidencePayload.sourceIdentity).toBe(first.externalEvidencePayload.sourceIdentity);
+    expect(second.canonicalEvidence.publishedAt).toBeNull();
+    expect(second.canonicalEvidence.sourceIdentity).toBe(first.canonicalEvidence.sourceIdentity);
     expect(second.evidenceId).toBe(first.evidenceId);
   });
 
@@ -384,7 +403,7 @@ describe("Wanoku Kachidoki Marina External Evidence Adapter v1", () => {
 });
 
 function evidenceFor(caption, options = {}) {
-  return firstTrip(preview([trip(caption)], options)).externalEvidencePayload;
+  return firstTrip(preview([trip(caption)], options)).canonicalEvidence;
 }
 
 function firstTrip(result) {
