@@ -143,15 +143,17 @@ export function parseKachidokiTripEntry({
   const seabassWindow = extractSpeciesWindow(afterHeader, "シーバス");
   const resultContext = firstResultContext(afterHeader);
   const explicitSeabassAttempt = hasExplicitSeabassAttempt(afterHeader);
-  const seabassResultInLead = /シーバス/u.test(resultContext);
+  const seabassResultInLead = leadingResultSpecies(resultContext) === "シーバス";
   const seabassTargeted = seabassMentioned ? Boolean(explicitSeabassAttempt || seabassResultInLead) : null;
 
   const catchResult = parseGetCount(seabassWindow);
   const hitResult = parseHitCount(seabassWindow);
-  const chaseMentioned = /チェイス/u.test(afterHeader);
-  const biteMentioned = /(?:ショートバイト|水面バイト|バイト)/u.test(afterHeader);
-  const followMentioned = /(?:追尾|魚がついて|魚が付いて|\bfollow\b)/iu.test(afterHeader);
+  const chaseMentioned = /チェイス/u.test(seabassWindow);
+  const biteMentioned = /(?:ショートバイト|水面バイト|バイト)/u.test(seabassWindow);
+  const lostFishMentioned = /(?:バラシ|バラし|ばらし|フックアウト)/u.test(seabassWindow);
+  const followMentioned = /(?:追尾|魚がついて|魚が付いて|\bfollow\b)/iu.test(seabassWindow);
   const hitEvidencePresent = hitResult.present || /(?:ヒット|\bhit\b)/iu.test(seabassWindow);
+  const tripCancelled = isCancelledTrip(afterHeader);
   const explicitZeroCatchCandidate = Boolean(
     explicitSeabassAttempt
     && !(catchResult.known && catchResult.count > 0)
@@ -160,6 +162,7 @@ export function parseKachidokiTripEntry({
   const getCountKnown = explicitZeroCatchCandidate ? true : catchResult.known;
   const getCount = explicitZeroCatchCandidate ? 0 : catchResult.count;
   const effort = parseEffort(planLabel);
+  const anglerCount = parseAnglerCount(afterHeader);
   const environmentalClues = parseEnvironmentalClues(afterHeader);
   const activationClues = parseActivationClues(afterHeader);
   const structuralClues = parseStructuralClues(afterHeader);
@@ -172,16 +175,19 @@ export function parseKachidokiTripEntry({
     getCount,
     explicitZeroCatchCandidate,
     effortDurationKnown: effort.known,
-    seabassContactAttributed: seabassTargeted === true,
+    seabassContactAttributed: seabassMentioned,
     hitEvidencePresent,
     chaseMentioned,
     biteMentioned,
+    lostFishMentioned,
+    tripCancelled,
     followMentioned
   });
-  const foundationGaps = foundationGapReasons({ hitResult, chaseMentioned, biteMentioned, followMentioned });
+  const foundationGaps = foundationGapReasons({ hitResult, chaseMentioned, biteMentioned, lostFishMentioned, followMentioned });
   const diagnostics = unique([
     ...pageDiagnostics,
     ...(daypart === "unknown" ? ["daypart-missing"] : ["daypart-only-no-clock"]),
+    ...(tripCancelled ? ["trip-cancelled"] : []),
     ...(seabassMentioned && !catchResult.known && !explicitZeroCatchCandidate ? ["seabass-get-count-unknown"] : []),
     ...(hitResult.present && !hitResult.known && hitResult.lowerBound === null ? ["seabass-hit-count-unknown"] : []),
     ...(foundationGaps.length > 0 ? ["foundation-gap"] : [])
@@ -205,13 +211,17 @@ export function parseKachidokiTripEntry({
     hitEvidencePresent,
     chaseMentioned,
     biteMentioned,
+    lostFishMentioned,
     followMentioned,
+    tripCancelled,
     explicitSeabassAttempt,
     explicitZeroCatchCandidate,
     eligibilityReason: explicitZeroCatchCandidate ? "explicit-seabass-attempt-and-explicit-zero" : null,
     effortDurationKnown: effort.known,
     effortDurationMinutes: effort.minutes,
     durationSource: effort.source,
+    anglerCountKnown: anglerCount !== null,
+    anglerCount,
     environmentalClues,
     activationClues,
     structuralClues,
@@ -481,10 +491,10 @@ function parseGetCount(speciesWindow) {
 function parseHitCount(speciesWindow) {
   if (!speciesWindow) return { present: false, known: false, count: null, lowerBound: null };
   const lower = /(\d+)\s*(?:hit|ヒット)\s*以上/iu.exec(speciesWindow);
-  if (lower) return { present: true, known: false, count: null, lowerBound: Number(lower[1]) };
+  if (lower && Number(lower[1]) > 0) return { present: true, known: false, count: null, lowerBound: Number(lower[1]) };
   const exact = /(\d+)\s*(?:hit|ヒット)/iu.exec(speciesWindow);
-  if (exact) return { present: true, known: true, count: Number(exact[1]), lowerBound: null };
-  const present = /(?:hit\s*多数|ヒット\s*多数|多数\s*(?:hit|ヒット))/iu.test(speciesWindow);
+  if (exact && Number(exact[1]) > 0) return { present: true, known: true, count: Number(exact[1]), lowerBound: null };
+  const present = /(?:(?:hit|ヒット)\s*(?:多数|連発)|多数\s*(?:hit|ヒット))/iu.test(speciesWindow);
   return { present, known: false, count: null, lowerBound: null };
 }
 
@@ -533,6 +543,14 @@ function firstResultContext(value) {
   return collapseWhitespace(firstLine).slice(0, 180);
 }
 
+function leadingResultSpecies(value) {
+  const candidates = ["シーバス", ...OTHER_SPECIES]
+    .map((species) => ({ species, index: value.indexOf(species) }))
+    .filter((candidate) => candidate.index >= 0)
+    .sort((left, right) => left.index - right.index);
+  return candidates[0]?.species ?? null;
+}
+
 function hasExplicitSeabassAttempt(value) {
   return /(?:シーバス(?:の[^。\n]{0,20})?(?:狙い|一本勝負|へ)|狙う(?:の|は)?[^。\n]{0,20}シーバス|シーバスを(?:狙|やって|ねら))/u.test(value);
 }
@@ -553,6 +571,17 @@ function parseEffort(planLabel) {
     return { known: true, minutes: 120, source: "service-plan" };
   }
   return { known: false, minutes: null, source: null };
+}
+
+function parseAnglerCount(value) {
+  const attributed = /(?:ゲスト|お客様|釣り人|アングラー)\s*(\d{1,2})\s*名/u.exec(value);
+  if (attributed) return Number(attributed[1]);
+  const party = /(?:^|[。\n])\s*(\d{1,2})\s*名様(?:で|にて)/u.exec(value);
+  return party ? Number(party[1]) : null;
+}
+
+function isCancelledTrip(value) {
+  return /(?:(?:出船|釣行|便)[^。\n]{0,12}(?:中止|キャンセル|欠航)|(?:中止|キャンセル|欠航)[^。\n]{0,12}(?:出船|釣行|便))/u.test(value);
 }
 
 function parseEnvironmentalClues(value) {
@@ -609,22 +638,24 @@ function inferTargetKey(value) {
 }
 
 function classifyFoundationConvertibility(input) {
+  if (input.tripCancelled) return null;
   if (input.getCountKnown && input.getCount > 0) return "positive-catch";
   if (input.explicitZeroCatchCandidate && input.effortDurationKnown) return "explicit-effort-zero-catch";
   if (
     input.seabassContactAttributed
-    && (input.hitEvidencePresent || input.chaseMentioned || input.biteMentioned || input.followMentioned)
+    && (input.hitEvidencePresent || input.chaseMentioned || input.biteMentioned || input.lostFishMentioned || input.followMentioned)
   ) return "bite-or-contact";
   return null;
 }
 
-function foundationGapReasons({ hitResult, chaseMentioned, biteMentioned, followMentioned }) {
+function foundationGapReasons({ hitResult, chaseMentioned, biteMentioned, lostFishMentioned, followMentioned }) {
   return unique([
     ...(hitResult.known ? ["hit-count-not-representable"] : []),
     ...(hitResult.lowerBound !== null ? ["hit-lower-bound-not-representable"] : []),
     ...(hitResult.present && !hitResult.known && hitResult.lowerBound === null ? ["hit-presence-detail-not-representable"] : []),
     ...(chaseMentioned ? ["chase-not-representable"] : []),
     ...(biteMentioned ? ["bite-detail-not-representable"] : []),
+    ...(lostFishMentioned ? ["lost-fish-not-representable"] : []),
     ...(followMentioned ? ["follow-not-representable"] : [])
   ]);
 }
@@ -648,13 +679,17 @@ function failedTripRecord({ sourceRecordId, sourceUrl, diagnostic }) {
     hitEvidencePresent: false,
     chaseMentioned: false,
     biteMentioned: false,
+    lostFishMentioned: false,
     followMentioned: false,
+    tripCancelled: false,
     explicitSeabassAttempt: false,
     explicitZeroCatchCandidate: false,
     eligibilityReason: null,
     effortDurationKnown: false,
     effortDurationMinutes: null,
     durationSource: null,
+    anglerCountKnown: false,
+    anglerCount: null,
     environmentalClues: { flow: false, rain: false, wind: false, garbage: false, tide: false, waterCondition: false, bait: false },
     activationClues: [],
     structuralClues: [],
