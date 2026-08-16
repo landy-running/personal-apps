@@ -138,10 +138,11 @@ export function parseWakuwakuyaRecord({ sectionHtml, sourceUrl, sourceMonth }) {
   const seabassContext = extractSeabassContext(heading, body, seabassTargeted === true);
   const landed = parseLandedEvidence(seabassContext);
   const contact = parseContactEvidence(seabassContext);
-  const biteMentioned = /(?:バイト|アタリ)/u.test(seabassContext);
+  const biteMentioned = /(?:バイト|アタリ)/u.test(positiveInteractionContext(seabassContext));
   const chaseMentioned = /(?:チェイス|追尾)/u.test(seabassContext);
   const followMentioned = /(?:追って|追いかけ|付いてくる|ついてくる|後ろに付)/u.test(seabassContext);
-  const lostFishMentioned = /(?:バラシ|バラし|ばらし|フックアウト|ラインブレイク|抜けて|抜けた)/u.test(seabassContext);
+  const lostFishMentioned = /(?:バラシ|バラし|ばらし|フックアウト|ラインブレイク|抜けて|抜けた)/u
+    .test(positiveLostFishContext(seabassContext));
   const visibleFishMentioned = /(?:魚が見え|姿が見え|群れ|ボイル|飛び出)/u.test(seabassContext);
   const zeroPhrasePresent = /(?:生命感なし|反応なし|アタリなし|バイトなし|ノーバイト|釣れず|釣れな|不発|撃沈|姿(?:を)?見(?:られ|れ)ず|顔(?:を)?見(?:られ|れ)ず|ノーフィッシュ|0\s*本)/u.test(seabassContext);
   const zeroSegmentCandidate = explicitSeabassEffort && zeroPhrasePresent;
@@ -515,7 +516,10 @@ export async function fetchWakuwakuyaHtml(value, fetchImpl = globalThis.fetch) {
 
 function parseTripStatus(heading, body) {
   const value = `${heading}\n${body}`;
-  if (/(?:出船(?:を)?中止|出船中止|欠航|中止とな|出船見合わせ)/u.test(value)) return "cancelled";
+  const currentTripCompleted = /(?:本日|今日は|本日は)[^。！？\n]{0,80}出船(?!\s*(?:中止|を中止|見合わせ))/u.test(value);
+  if (!currentTripCompleted && /(?:出船(?:を)?中止|出船中止|欠航|中止とな|出船見合わせ)/u.test(value)) {
+    return "cancelled";
+  }
   if (/便/u.test(heading) || /(?:出船|ご乗船|帰着|終了(?:となり|でした|のお時間)|乗合い便|乗り合い便)/u.test(value)) return "completed";
   return "unknown";
 }
@@ -554,7 +558,7 @@ function parseLandedEvidence(value) {
   if (lower) return { exact: null, lowerBound: Number(lower[1]), positive: true };
   const exactMatches = [...normalized.matchAll(/(\d+)\s*(?:本|匹|キャッチ|GET)/giu)].map((match) => Number(match[1]));
   const exact = exactMatches.length === 1 ? exactMatches[0] : null;
-  const positive = exact !== null || /(?:キャッチ|GET|全員安打|入れ食い|連発|遊んで貰|遊んでもら|顔が見れた|釣れ(?:た|て|始め|続|まし)|お土産(?:を)?確保)/iu.test(normalized);
+  const positive = exact !== null || /(?:キャッチ|GET|全員安打|入れ食い|連発|遊んで貰|遊んでもら|顔が見れた|釣れ(?:た|て|始め|続|まし)|お土産(?:を)?確保|(?:シーバス|セイゴ|フッコ|スズキ)(?:が|は)?ポツポツ(?!\s*(?:ヒット|バイト|アタリ)))/iu.test(normalized);
   return { exact, lowerBound: null, positive };
 }
 
@@ -568,14 +572,22 @@ function parseContactEvidence(value) {
   ].map((match) => Number(match[1]));
   const uniqueCounts = unique(exactMatches.filter((count) => count > 0));
   const exact = uniqueCounts.length === 1 ? uniqueCounts[0] : null;
-  const positiveContext = normalized
-    .replace(/(?:アタリ|バイト|反応)(?:は|も|が)?(?:なし|無い|ない)/gu, "")
-    .replace(/(?:ノーバイト|0\s*(?:ヒット|hit|バイト|アタリ))/giu, "");
+  const positiveContext = positiveInteractionContext(normalized);
   const reactionIsContact = /(?:ルアー|ワーム|ミノー)[^。！？\n]{0,18}反応|反応[^。！？\n]{0,18}(?:ヒット|バイト|アタリ)/u.test(normalized);
   const present = exact !== null
     || /(?:ヒット|hit|バイト|アタリ|チェイス|追尾|バラシ|バラし|ばらし|フックアウト|ラインブレイク)/iu.test(positiveContext)
     || reactionIsContact;
   return { present, exact, lowerBound: null };
+}
+
+function positiveInteractionContext(value) {
+  return value
+    .replace(/(?:アタリ|バイト|反応)(?:は|も|が)?(?:なし|無い|ない)/gu, "")
+    .replace(/(?:ノーバイト|0\s*(?:ヒット|hit|バイト|アタリ))/giu, "");
+}
+
+function positiveLostFishContext(value) {
+  return value.replace(/ベイト(?:が|も|は)?抜け(?:て|た)/gu, "");
 }
 
 function parseEffort(heading, body) {
