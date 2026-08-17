@@ -23,6 +23,10 @@ import {
   persistSeabassExternalEvidence,
   readSeabassExternalEvidence as readStoredSeabassExternalEvidence
 } from "./external-evidence-persistence.js";
+import {
+  YOKOHAMA_FIXED_NODE_COLLECTOR_SCHEMA_VERSION,
+  collectYokohamaFixedNode
+} from "./yokohama-fixed-node-collector.js";
 
 const SERVICE_NAME = "wanoku-intel-worker";
 const DEFAULT_WANOKU_PWA_ORIGIN = "https://wanoku-pwa.pages.dev";
@@ -42,6 +46,7 @@ const D1_MAX_BOUND_PARAMS_PER_STATEMENT = 90;
 const ADMIN_JMA_TIDE_BODY_MAX_BYTES = 4096;
 const ADMIN_PREDICTION_SNAPSHOT_BODY_MAX_BYTES = 2048;
 const ADMIN_EXTERNAL_EVIDENCE_BODY_MAX_BYTES = 16_384;
+const ADMIN_FIXED_NODE_BODY_MAX_BYTES = 1024;
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const ENVIRONMENT_STATE_HABITAT_GRAPH_GENERATED_AT = "2026-07-14T00:00:00.000Z";
 const ENVIRONMENT_STATE_JMA_MAPPING_REVIEWED_AT = "2026-07-14T00:00:00.000Z";
@@ -1703,6 +1708,48 @@ async function handleCollectJmaTidePrediction(request, env) {
   }
 }
 
+async function handleCollectFixedNodeYokohama(request, env) {
+  const auth = isAdminAuthorized(request, env);
+  if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
+  if (!env?.WANOKU_INTEL_D1 || typeof env.WANOKU_INTEL_D1.prepare !== "function" || typeof env.WANOKU_INTEL_D1.batch !== "function") {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+  const bodyResult = await readAdminJsonBody(request, ADMIN_FIXED_NODE_BODY_MAX_BYTES);
+  if (!bodyResult.ok) {
+    return json(request, env, { ok: false, error: bodyResult.error, message: bodyResult.message }, { status: 400 });
+  }
+  const allowed = new Set(["date"]);
+  const errors = Object.keys(bodyResult.body)
+    .filter((key) => !allowed.has(key))
+    .map((key) => `unsupported field: ${key}`);
+  if (
+    bodyResult.body.date !== undefined
+    && !isValidIsoDate(bodyResult.body.date)
+  ) {
+    errors.push("date must be YYYY-MM-DD.");
+  }
+  if (errors.length > 0) {
+    return json(request, env, { ok: false, error: "invalid_request", errors }, { status: 400 });
+  }
+  try {
+    const result = await collectYokohamaFixedNode({
+      db: env.WANOKU_INTEL_D1,
+      date: bodyResult.body.date
+    });
+    return json(request, env, result, { status: result.failed === 0 ? 200 : result.reportsGenerated > 0 ? 207 : 502 });
+  } catch (error) {
+    console.error("yokohama_fixed_node_collection_failed", {
+      message: error?.message || "Yokohama fixed-node collection failed."
+    });
+    return json(request, env, {
+      ok: false,
+      schemaVersion: YOKOHAMA_FIXED_NODE_COLLECTOR_SCHEMA_VERSION,
+      error: "yokohama_fixed_node_collection_failed",
+      message: "Yokohama fixed-node collection failed."
+    }, { status: 500 });
+  }
+}
+
 async function handleCreateSeabassPredictionSnapshot(request, env) {
   const auth = isAdminAuthorized(request, env);
   if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
@@ -2059,6 +2106,12 @@ function isCanonicalUtcIsoDateTime(value) {
   return Number.isFinite(date.getTime()) && date.toISOString() === value;
 }
 
+function isValidIsoDate(value) {
+  if (typeof value !== "string" || !/^20\d{2}-\d{2}-\d{2}$/u.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 async function handleRequest(request, env) {
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -2085,6 +2138,10 @@ async function handleRequest(request, env) {
 
   if (request.method === "POST" && url.pathname === "/admin/collect-jma-tide-prediction") {
     return handleCollectJmaTidePrediction(request, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/collect-fixed-node-yokohama") {
+    return handleCollectFixedNodeYokohama(request, env);
   }
 
   if (request.method === "POST" && url.pathname === "/admin/predictions/seabass/snapshots") {
@@ -2123,6 +2180,7 @@ async function handleRequest(request, env) {
         "/predictions/seabass/snapshots/:id",
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction",
+        "POST /admin/collect-fixed-node-yokohama",
         "POST /admin/predictions/seabass/snapshots",
         "POST /admin/evidence/seabass"
       ]

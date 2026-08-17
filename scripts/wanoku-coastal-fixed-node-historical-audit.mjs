@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  buildYokohamaGraphqlGetUrl,
+  buildYokohamaMonthlyQuery,
+  canonicalFixedNodeSpeciesGroup,
+  extractYokohamaReadConfig,
+  normalizeYokohamaAppSyncEndpoint,
+  normalizeYokohamaAssetUrl,
+  parseYokohamaLastPost as parseYokohamaSourceRecord,
+  YOKOHAMA_FIXED_NODE_SPECIES_GROUPS
+} from "../workers/wanoku-intel-worker/src/yokohama-fixed-node-source.js";
+
+export { extractYokohamaReadConfig };
 
 export const COASTAL_FIXED_NODE_AUDIT_VERSION = "wanoku-coastal-fixed-node-historical-audit.v1";
 export const YOKOHAMA_ROOT_URL = "https://yokohama-fishingpiers.jp/";
@@ -14,7 +26,6 @@ const MAX_ICHIHARA_PAGES = 30;
 const CANONICAL_UTC_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const YOKOHAMA_HOST = "yokohama-fishingpiers.jp";
 const ICHIHARA_HOST = "ichihara-umizuri.com";
-const APPSYNC_HOST = /^[a-z0-9-]+\.appsync-api\.ap-northeast-1\.amazonaws\.com$/u;
 
 export const COASTAL_FACILITIES = Object.freeze([
   Object.freeze({
@@ -55,18 +66,7 @@ export const COASTAL_FACILITIES = Object.freeze([
   })
 ]);
 
-const SPECIES_GROUPS = Object.freeze({
-  seabass: ["スズキ", "フッコ", "セイゴ", "シーバス"],
-  sardine: ["イワシ", "カタクチイワシ", "マイワシ", "ウルメイワシ"],
-  sappa: ["サッパ"],
-  konoshiro: ["コノシロ"],
-  aji: ["アジ", "マアジ"],
-  saba: ["サバ", "マサバ", "ゴマサバ"],
-  bora: ["ボラ", "イナ", "オボコ"],
-  haze: ["ハゼ", "マハゼ"]
-});
-
-const AUDIT_SPECIES_GROUPS = Object.freeze(Object.keys(SPECIES_GROUPS));
+const AUDIT_SPECIES_GROUPS = Object.freeze(Object.keys(YOKOHAMA_FIXED_NODE_SPECIES_GROUPS));
 const SOURCE_FIELD_COVERAGE = Object.freeze({
   "yokohama-appsync": Object.freeze({
     dailyRecord: "EXACT",
@@ -125,87 +125,12 @@ export function parseCoastalAuditArgs(argv = process.argv.slice(2)) {
   return options;
 }
 
-export function extractYokohamaReadConfig(rootHtml, bundleJs) {
-  if (typeof rootHtml !== "string" || typeof bundleJs !== "string") throw new Error("Yokohama source documents must be strings.");
-  const bundlePath = /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']/iu.exec(rootHtml)?.[1]
-    ?? /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*\btype=["']module["']/iu.exec(rootHtml)?.[1];
-  if (!bundlePath) throw auditParseError("yokohama-bundle-url-missing");
-  const bundleUrl = normalizeYokohamaAssetUrl(bundlePath);
-  const endpointValue = /aws_appsync_graphqlEndpoint["']?\s*:\s*["']([^"']+)["']/u.exec(bundleJs)?.[1];
-  const apiKey = /aws_appsync_apiKey["']?\s*:\s*["']([^"']+)["']/u.exec(bundleJs)?.[1];
-  const authMode = /aws_appsync_authenticationType["']?\s*:\s*["']([^"']+)["']/u.exec(bundleJs)?.[1];
-  if (!endpointValue || !apiKey || authMode !== "API_KEY") throw auditParseError("yokohama-read-config-missing");
-  const endpoint = new URL(endpointValue);
-  if (endpoint.protocol !== "https:" || !APPSYNC_HOST.test(endpoint.hostname) || endpoint.pathname !== "/graphql") {
-    throw auditParseError("yokohama-appsync-endpoint-invalid");
-  }
-  return { bundleUrl, endpoint: endpoint.href, apiKey };
-}
-
 export function parseYokohamaLastPost(item, context) {
-  const facility = requireFacility(context?.facilityId, "yokohama-appsync");
-  if (!item || typeof item !== "object") throw auditParseError("yokohama-last-post-invalid");
-  if (item.facility !== facility.providerFacilityKey) throw auditParseError("yokohama-facility-mismatch");
-  if (typeof item.id !== "string" || item.id.trim() === "") throw auditParseError("yokohama-record-id-missing");
-  const observationDate = parseSlashDate(item.date);
-  const collectedAt = requireCanonicalUtcIso(context.collectedAt, "collectedAt");
-  const species = [];
-  for (let index = 1; index <= 30; index += 1) {
-    const sourceName = cleanText(item[`fish${index}Name`]);
-    if (!sourceName) continue;
-    const count = finiteNonnegativeNumber(item[`fish${index}Count`]);
-    const minSize = finiteNonnegativeNumber(item[`fish${index}MinSize`]);
-    const maxSize = finiteNonnegativeNumber(item[`fish${index}MaxSize`]);
-    const unit = cleanText(item[`fish${index}Unit`]);
-    species.push({
-      sourceName,
-      canonicalGroup: canonicalSpeciesGroup(sourceName),
-      count,
-      countKnown: count !== null,
-      minSize,
-      maxSize,
-      sizeUnit: unit || null,
-      areaLabels: stringArray(item[`fish${index}Place`])
-    });
-  }
-  const sentence = cleanText(item.sentence);
-  const visitors = integerOrNull(item.visitors);
-  const closureMentioned = hasClosureLanguage(sentence);
-  const operatingStatus = closureMentioned && species.length === 0 && (!visitors || visitors === 0)
-    ? "closed"
-    : visitors > 0 || species.length > 0
-      ? "operating"
-      : "unknown";
-  const reportComplete = operatingStatus === "operating" && species.length > 0 && species.every((row) => row.countKnown);
-  return {
-    providerId: facility.providerId,
-    facilityId: facility.facilityId,
-    facilityLabel: facility.label,
-    sourceFamily: facility.sourceFamily,
-    sourceRecordId: `last-post:${item.id}`,
-    sourceUrl: facility.sourceUrl,
-    observationDate,
-    observedAt: `${observationDate}T00:00:00+09:00`,
-    temporalPrecision: "date-only-jst",
-    publishedAt: canonicalizeUtcIso(item.createdAt),
-    publicationSemantics: "source-record-created-at",
-    modifiedAt: canonicalizeUtcIso(item.updatedAt),
-    collectedAt,
-    weather: cleanText(item.weather),
-    waterTemperatureC: finiteNumber(item.waterTemp),
-    tideLabel: cleanText(item.tide),
-    visitors,
-    operatingStatus,
-    reportComplete,
-    species,
-    closureMentioned,
-    diagnostics: unique([
-      ...(canonicalizeUtcIso(item.createdAt) ? ["publication-time-is-record-created-at"] : ["publication-time-missing"]),
-      ...(operatingStatus === "unknown" ? ["operating-status-unknown"] : []),
-      ...(!reportComplete && operatingStatus === "operating" ? ["species-table-incomplete"] : [])
-    ]),
-    parseStatus: "ok"
-  };
+  const facility = COASTAL_FACILITIES.find((candidate) => (
+    candidate.facilityId === context?.facilityId && candidate.sourceFamily === "yokohama-appsync"
+  ));
+  if (!facility) throw new Error(`Unknown yokohama-appsync facility: ${context?.facilityId}`);
+  return parseYokohamaSourceRecord(item, { ...context, facility });
 }
 
 export function parseIchiharaListingPage(html, pageUrl = ICHIHARA_ARCHIVE_URL) {
@@ -472,7 +397,7 @@ export async function runCoastalFixedNodeHistoricalAudit(options = {}) {
   for (const facility of COASTAL_FACILITIES.filter((candidate) => candidate.sourceFamily === "yokohama-appsync")) {
     for (const sourceMonth of targetMonths) {
       const variables = { month: sourceMonth.replace("-", "/"), facility: { eq: facility.providerFacilityKey }, limit: 100 };
-      const url = buildGraphqlGetUrl(config.endpoint, query, variables);
+      const url = buildYokohamaGraphqlGetUrl(config.endpoint, query, variables);
       let payload;
       try {
         const text = await getText(url, "yokohamaAppSync", { accept: "application/json", "x-api-key": config.apiKey });
@@ -653,28 +578,6 @@ function aggregateFacility(facility, records, inventory, targetMonths, collected
   };
 }
 
-function buildYokohamaMonthlyQuery() {
-  const fishFields = [];
-  for (let index = 1; index <= 30; index += 1) {
-    fishFields.push(
-      `fish${index}Name`,
-      `fish${index}MinSize`,
-      `fish${index}MaxSize`,
-      `fish${index}Unit`,
-      `fish${index}Count`,
-      `fish${index}Place`
-    );
-  }
-  return `query CoastalAudit($month:String!,$facility:ModelStringKeyConditionInput,$limit:Int){lastPostsByMonthAndFacility(month:$month,facility:$facility,limit:$limit){items{id date month facility sentence weather waterTemp tide visitors ${fishFields.join(" ")} createdAt updatedAt} nextToken}}`;
-}
-
-function buildGraphqlGetUrl(endpoint, query, variables) {
-  const url = new URL(endpoint);
-  url.searchParams.set("query", query);
-  url.searchParams.set("variables", JSON.stringify(variables));
-  return url.href;
-}
-
 function parseIchiharaFishRows(html) {
   const rows = [];
   const rowPattern = /<div\b[^>]*\bclass=["'][^"']*\bflex\b[^"']*\bborder-b\b[^"']*\bborder-gray-300\b[^"']*["'][^>]*>\s*<div\b[^>]*>([\s\S]*?)<\/div>\s*<div\b[^>]*>\s*<p\b[^>]*>([\s\S]*?)<\/p>\s*<\/div>\s*<div\b[^>]*>\s*<p\b[^>]*>([\s\S]*?)<\/p>\s*<\/div>\s*<\/div>/giu;
@@ -688,7 +591,7 @@ function parseIchiharaFishRows(html) {
     const count = countMatch ? Number(countMatch[1].replace(/,/gu, "")) : null;
     rows.push({
       sourceName,
-      canonicalGroup: canonicalSpeciesGroup(sourceName),
+      canonicalGroup: canonicalFixedNodeSpeciesGroup(sourceName),
       count: Number.isFinite(count) ? count : null,
       countKnown: Number.isFinite(count),
       minSize: sizeNumbers[0] ?? null,
@@ -736,14 +639,6 @@ function sourceAliasesObserved(records, group) {
   return unique(records.flatMap((record) => record.species
     .filter((species) => species.canonicalGroup === group)
     .map((species) => species.sourceName))).sort();
-}
-
-function canonicalSpeciesGroup(sourceName) {
-  const normalized = cleanText(sourceName)?.replace(/[・\s]/gu, "") ?? "";
-  for (const [group, aliases] of Object.entries(SPECIES_GROUPS)) {
-    if (aliases.some((alias) => normalized === alias || normalized.startsWith(alias))) return group;
-  }
-  return null;
 }
 
 function selectMonthlyIchiharaDetails(records, targetMonths) {
@@ -821,7 +716,8 @@ function normalizeAuditReadUrl(value, scope) {
   if (scope === "yokohamaBundle") return normalizeYokohamaAssetUrl(value);
   if (scope === "yokohamaAppSync") {
     const url = new URL(value);
-    if (url.protocol !== "https:" || !APPSYNC_HOST.test(url.hostname) || url.pathname !== "/graphql" || !url.searchParams.has("query")) {
+    normalizeYokohamaAppSyncEndpoint(`${url.origin}${url.pathname}`);
+    if (!url.searchParams.has("query")) {
       throw new Error("Invalid Yokohama AppSync read URL.");
     }
     return url.href;
@@ -829,16 +725,6 @@ function normalizeAuditReadUrl(value, scope) {
   if (scope === "ichiharaListings") return normalizeIchiharaListingUrl(value);
   if (scope === "ichiharaDetails") return normalizeIchiharaDetailUrl(value);
   throw new Error(`Unknown read scope: ${scope}`);
-}
-
-function normalizeYokohamaAssetUrl(value) {
-  const url = new URL(value, YOKOHAMA_ROOT_URL);
-  if (url.protocol !== "https:" || url.hostname !== YOKOHAMA_HOST || !/^\/assets\/index-[a-f0-9]+\.js$/u.test(url.pathname)) {
-    throw new Error("Invalid Yokohama bundle URL.");
-  }
-  url.search = "";
-  url.hash = "";
-  return url.href;
 }
 
 function normalizeIchiharaListingUrl(value) {
@@ -859,18 +745,6 @@ function normalizeIchiharaDetailUrl(value) {
   url.hash = "";
   if (!url.pathname.endsWith("/")) url.pathname += "/";
   return url.href;
-}
-
-function requireFacility(facilityId, sourceFamily) {
-  const facility = COASTAL_FACILITIES.find((candidate) => candidate.facilityId === facilityId && candidate.sourceFamily === sourceFamily);
-  if (!facility) throw new Error(`Unknown ${sourceFamily} facility: ${facilityId}`);
-  return facility;
-}
-
-function parseSlashDate(value) {
-  const match = /^(20\d{2})\/(\d{2})\/(\d{2})$/u.exec(String(value ?? ""));
-  if (!match) throw auditParseError("yokohama-observation-date-invalid");
-  return validateDateParts(Number(match[1]), Number(match[2]), Number(match[3]));
 }
 
 function validateDateParts(year, month, day) {
@@ -926,11 +800,6 @@ function cleanText(value) {
   return text === "" ? null : text;
 }
 
-function stringArray(value) {
-  if (!Array.isArray(value)) return [];
-  return unique(value.map(cleanText).filter(Boolean));
-}
-
 function finiteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(String(value).replace(/,/gu, ""));
@@ -940,11 +809,6 @@ function finiteNumber(value) {
 function finiteNonnegativeNumber(value) {
   const number = finiteNumber(value);
   return number !== null && number >= 0 ? number : null;
-}
-
-function integerOrNull(value) {
-  const number = finiteNonnegativeNumber(value);
-  return Number.isInteger(number) ? number : null;
 }
 
 function integerFromPattern(value, pattern) {
