@@ -303,3 +303,26 @@ export {
   type SeabassExternalEvidenceValidationResult,
   type SeabassEvidenceSemanticContent
 } from "./external-evidence";
+export {
+  FIXED_COASTAL_FACILITIES,
+  FIXED_NODE_AUDIT_GROUP_TO_SPECIES_ID,
+  FIXED_NODE_OBSERVATION_SCHEMA_VERSION,
+  FIXED_NODE_SPECIES_IDS,
+  buildFixedNodeDailyReport,
+  buildFixedNodeReportSemanticContent,
+  fixedCoastalFacilitySourceIdentity,
+  fixedNodeReportIdentity,
+  fixedNodeSpeciesIdFromAuditGroup,
+  normalizedCatchPer100Visitors,
+  type FixedCoastalFacility,
+  type FixedNodeAliasCoverage,
+  type FixedNodeCompleteness,
+  type FixedNodeDailyReport,
+  type FixedNodeDailyReportInput,
+  type FixedNodeDailyReportValidationResult,
+  type FixedNodeOperatingStatus,
+  type FixedNodePresenceState,
+  type FixedNodeReportSemanticContent,
+  type FixedNodeSpeciesId,
+  type FixedNodeSpeciesObservation
+} from "./fixed-node-observation";
