@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { unstable_splitSqlQuery } from "wrangler";
 import {
   FIXED_COASTAL_FACILITIES,
   FIXED_NODE_OBSERVATION_SCHEMA_VERSION,
@@ -255,6 +256,32 @@ describe("Unified Observation Schema v1 repository", () => {
 });
 
 describe("Unified Observation Schema v1 migration", () => {
+  it("keeps every statement complete under the Wrangler 4.44.0 D1 splitter", () => {
+    const migrationCommand = `${MIGRATION}\nINSERT INTO d1_migrations (name) VALUES ('0006_unified_observation_schema.sql');`;
+    const statements = unstable_splitSqlQuery(migrationCommand);
+    const triggerStatements = statements.filter((statement) => /^CREATE TRIGGER\b/iu.test(statement));
+
+    expect(statements).toHaveLength(14);
+    expect(statements.filter((statement) => /^CREATE TABLE\b/iu.test(statement))).toHaveLength(5);
+    expect(statements.filter((statement) => /^CREATE INDEX\b/iu.test(statement))).toHaveLength(6);
+    expect(statements.filter((statement) => /^INSERT INTO\b/iu.test(statement))).toHaveLength(2);
+    expect(triggerStatements).toHaveLength(1);
+    expect(triggerStatements[0]).toMatch(/\bBEGIN\s+SELECT RAISE\([\s\S]+\);\s*END$/iu);
+    expect(triggerStatements[0]).not.toMatch(/\bCASE\b/iu);
+    expect(triggerStatements[0].match(/\b(?:BEGIN|CASE|END)\b/giu)).toEqual(["BEGIN", "END"]);
+    expect(MIGRATION.trimEnd()).toMatch(/END;$/u);
+    expect(statements.some((statement) => /^END\b/iu.test(statement))).toBe(false);
+  });
+
+  it("avoids the nested CASE terminator that a remote trigger splitter can close early", () => {
+    const triggerSql = MIGRATION.slice(MIGRATION.indexOf("CREATE TRIGGER"));
+    const naiveFragments = triggerSql.split(";").map((fragment) => fragment.trim()).filter(Boolean);
+
+    expect(naiveFragments[0]).toMatch(/\bBEGIN\s+SELECT RAISE\(/iu);
+    expect(naiveFragments[0]).not.toMatch(/\bCASE\b|\bEND$/iu);
+    expect(naiveFragments[1]).toBe("END");
+  });
+
   it("adds only fixed-node facts plus source-of-truth spatial references and mappings", () => {
     expect(MIGRATION).toContain("CREATE TABLE IF NOT EXISTS fixed_node_daily_reports");
     expect(MIGRATION).toContain("CREATE TABLE IF NOT EXISTS fixed_node_species_observations");

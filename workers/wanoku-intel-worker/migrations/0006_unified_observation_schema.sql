@@ -131,8 +131,7 @@ CREATE INDEX IF NOT EXISTS idx_fixed_node_species_facility_date
 CREATE TRIGGER IF NOT EXISTS trg_fixed_node_absence_requires_complete_operating_report
 BEFORE INSERT ON fixed_node_species_observations
 WHEN NEW.presence_state = 'absent'
-BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  AND NOT EXISTS (
     SELECT 1
     FROM fixed_node_daily_reports
     WHERE report_id = NEW.report_id
@@ -140,5 +139,7 @@ BEGIN
       AND observation_date = NEW.observation_date
       AND operating_status = 'operating'
       AND report_completeness = 'complete'
-  ) THEN RAISE(ABORT, 'fixed-node absence requires a complete operating report') END;
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'fixed-node absence requires a complete operating report');
 END;
