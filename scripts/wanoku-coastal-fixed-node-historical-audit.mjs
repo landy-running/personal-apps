@@ -5,6 +5,7 @@ import {
   buildYokohamaGraphqlGetUrl,
   buildYokohamaMonthlyQuery,
   canonicalFixedNodeSpeciesGroup,
+  extractYokohamaBundleUrl,
   extractYokohamaReadConfig,
   normalizeYokohamaAppSyncEndpoint,
   normalizeYokohamaAssetUrl,
@@ -386,10 +387,7 @@ export async function runCoastalFixedNodeHistoricalAudit(options = {}) {
   };
 
   const rootHtml = await getText(YOKOHAMA_ROOT_URL, "yokohamaRoot");
-  const bundlePath = /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']/iu.exec(rootHtml)?.[1]
-    ?? /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*\btype=["']module["']/iu.exec(rootHtml)?.[1];
-  if (!bundlePath) throw auditParseError("yokohama-bundle-url-missing");
-  const bundleUrl = normalizeYokohamaAssetUrl(bundlePath);
+  const bundleUrl = extractYokohamaBundleUrl(rootHtml);
   const bundleJs = await getText(bundleUrl, "yokohamaBundle");
   const config = extractYokohamaReadConfig(rootHtml, bundleJs);
   const query = buildYokohamaMonthlyQuery();

@@ -30,16 +30,21 @@ export function extractYokohamaReadConfig(rootHtml, bundleJs) {
   if (typeof rootHtml !== "string" || typeof bundleJs !== "string") {
     throw sourceError("unexpected_schema", "Yokohama source documents must be strings.");
   }
-  const bundlePath = /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']/iu.exec(rootHtml)?.[1]
-    ?? /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*\btype=["']module["']/iu.exec(rootHtml)?.[1];
-  if (!bundlePath) throw sourceError("yokohama-bundle-url-missing");
-  const bundleUrl = normalizeYokohamaAssetUrl(bundlePath);
+  const bundleUrl = extractYokohamaBundleUrl(rootHtml);
   const endpointValue = /aws_appsync_graphqlEndpoint["']?\s*:\s*["']([^"']+)["']/u.exec(bundleJs)?.[1];
   const apiKey = /aws_appsync_apiKey["']?\s*:\s*["']([^"']+)["']/u.exec(bundleJs)?.[1];
   const authMode = /aws_appsync_authenticationType["']?\s*:\s*["']([^"']+)["']/u.exec(bundleJs)?.[1];
   if (!endpointValue || !apiKey || authMode !== "API_KEY") throw sourceError("yokohama-read-config-missing");
   const endpoint = normalizeYokohamaAppSyncEndpoint(endpointValue);
   return { bundleUrl, endpoint, apiKey };
+}
+
+export function extractYokohamaBundleUrl(rootHtml) {
+  if (typeof rootHtml !== "string") throw sourceError("unexpected_schema", "Yokohama root document must be a string.");
+  const bundlePath = /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']/iu.exec(rootHtml)?.[1]
+    ?? /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*\btype=["']module["']/iu.exec(rootHtml)?.[1];
+  if (!bundlePath) throw sourceError("yokohama-bundle-url-missing");
+  return normalizeYokohamaAssetUrl(bundlePath);
 }
 
 export function parseYokohamaLastPost(item, context = {}) {
@@ -159,8 +164,7 @@ export async function fetchYokohamaFixedNodeDailySource(options = {}) {
   let config;
   try {
     const rootHtml = await getText(YOKOHAMA_FIXED_NODE_ROOT_URL);
-    const bundlePath = extractYokohamaBundlePath(rootHtml);
-    const bundleUrl = normalizeYokohamaAssetUrl(bundlePath);
+    const bundleUrl = extractYokohamaBundleUrl(rootHtml);
     const bundleJs = await getText(bundleUrl);
     config = extractYokohamaReadConfig(rootHtml, bundleJs);
   } catch (error) {
@@ -346,13 +350,6 @@ function validateFacilities(value) {
 function yokohamaFacilitySourceUrl(providerFacilityKey) {
   if (!/^[a-z0-9-]+$/u.test(providerFacilityKey)) throw new Error("Invalid Yokohama provider facility key.");
   return `https://${YOKOHAMA_HOST}/${providerFacilityKey}/fishing-history`;
-}
-
-function extractYokohamaBundlePath(rootHtml) {
-  const path = /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']/iu.exec(rootHtml)?.[1]
-    ?? /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*\btype=["']module["']/iu.exec(rootHtml)?.[1];
-  if (!path) throw sourceError("yokohama-bundle-url-missing");
-  return path;
 }
 
 function parseSlashDate(value) {
