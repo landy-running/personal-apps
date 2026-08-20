@@ -27,6 +27,10 @@ import {
   YOKOHAMA_FIXED_NODE_COLLECTOR_SCHEMA_VERSION,
   collectYokohamaFixedNode
 } from "./yokohama-fixed-node-collector.js";
+import {
+  ICHIHARA_FIXED_NODE_COLLECTOR_SCHEMA_VERSION,
+  collectIchiharaFixedNode
+} from "./ichihara-fixed-node-collector.js";
 
 const SERVICE_NAME = "wanoku-intel-worker";
 const DEFAULT_WANOKU_PWA_ORIGIN = "https://wanoku-pwa.pages.dev";
@@ -1750,6 +1754,38 @@ async function handleCollectFixedNodeYokohama(request, env) {
   }
 }
 
+async function handleCollectFixedNodeIchihara(request, env) {
+  const auth = isAdminAuthorized(request, env);
+  if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
+  if (!env?.WANOKU_INTEL_D1 || typeof env.WANOKU_INTEL_D1.prepare !== "function" || typeof env.WANOKU_INTEL_D1.batch !== "function") {
+    return json(request, env, { ok: false, error: "d1_not_configured" }, { status: 503 });
+  }
+  const bodyResult = await readAdminJsonBody(request, ADMIN_FIXED_NODE_BODY_MAX_BYTES);
+  if (!bodyResult.ok) {
+    return json(request, env, { ok: false, error: bodyResult.error, message: bodyResult.message }, { status: 400 });
+  }
+  const errors = Object.keys(bodyResult.body).map((key) => `unsupported field: ${key}`);
+  if (errors.length > 0) {
+    return json(request, env, { ok: false, error: "invalid_request", errors }, { status: 400 });
+  }
+  try {
+    const result = await collectIchiharaFixedNode({ db: env.WANOKU_INTEL_D1 });
+    return json(request, env, result, { status: 200 });
+  } catch (error) {
+    const upstreamFailure = typeof error?.code === "string" && error.code.startsWith("ichihara_");
+    console.error("ichihara_fixed_node_collection_failed", {
+      code: error?.code || "ichihara_fixed_node_collection_failed",
+      message: error?.message || "Ichihara fixed-node collection failed."
+    });
+    return json(request, env, {
+      ok: false,
+      schemaVersion: ICHIHARA_FIXED_NODE_COLLECTOR_SCHEMA_VERSION,
+      error: error?.code || "ichihara_fixed_node_collection_failed",
+      message: "Ichihara fixed-node collection failed."
+    }, { status: upstreamFailure ? 502 : 500 });
+  }
+}
+
 async function handleCreateSeabassPredictionSnapshot(request, env) {
   const auth = isAdminAuthorized(request, env);
   if (!auth.ok) return json(request, env, { error: auth.error }, { status: auth.status });
@@ -2144,6 +2180,10 @@ async function handleRequest(request, env) {
     return handleCollectFixedNodeYokohama(request, env);
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/collect-fixed-node-ichihara") {
+    return handleCollectFixedNodeIchihara(request, env);
+  }
+
   if (request.method === "POST" && url.pathname === "/admin/predictions/seabass/snapshots") {
     return handleCreateSeabassPredictionSnapshot(request, env);
   }
@@ -2181,6 +2221,7 @@ async function handleRequest(request, env) {
         "POST /admin/collect-environment",
         "POST /admin/collect-jma-tide-prediction",
         "POST /admin/collect-fixed-node-yokohama",
+        "POST /admin/collect-fixed-node-ichihara",
         "POST /admin/predictions/seabass/snapshots",
         "POST /admin/evidence/seabass"
       ]
