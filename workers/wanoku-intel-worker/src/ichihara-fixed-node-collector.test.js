@@ -77,6 +77,38 @@ describe("Wanoku Ichihara Fixed-Node Collector v1 parser", () => {
     expect(malformed).toMatchObject({ finality: "unknown", operatingStatus: "unknown", reportComplete: false });
   });
 
+  it("treats a past finalized interruption as final even when its narrative retains a point-in-time phrase", () => {
+    const historical = parse(detail({
+      narrative: "13時30分現在、強風のため14時30分をもちまして本日の営業を中止いたします。",
+      visitorText: "本日の入場者数は351名様でした。ありがとうございました。",
+      rows: [["セイゴ", "20cm", "合計2匹"]]
+    }), "22072");
+    expect(historical).toMatchObject({ finality: "final", operatingStatus: "operating", reportComplete: false });
+    expect(historical.diagnostics).toContain("operating-day-interrupted");
+  });
+
+  it("keeps a past interrupted operation without catches as an incomplete operating report", () => {
+    const historical = parse(detail({
+      narrative: "9時00分現在、強風のため9時を持ちまして本日の営業を中止とさせていただきます。",
+      visitorText: "",
+      rows: [["", "", "合計　匹"]]
+    }), "23293");
+    expect(historical).toMatchObject({ finality: "final", operatingStatus: "operating", reportComplete: false, visitors: null });
+    const report = buildIchiharaFixedNodeReport(historical, "fixture-run");
+    expect(report.species.every((row) => row.catchCount === null && row.presenceState === "unknown")).toBe(true);
+  });
+
+  it("keeps a past final visitor report with an empty catch table as incomplete instead of unknown", () => {
+    const historical = parse(detail({
+      narrative: "桟橋への新規入場が一時中止となりました。ありがとうございました。",
+      visitorText: "本日の入場者数は6名様でした。",
+      rows: [["", "", "合計　匹"]]
+    }), "24648");
+    expect(historical).toMatchObject({ finality: "final", operatingStatus: "operating", reportComplete: false, visitors: 6 });
+    const report = buildIchiharaFixedNodeReport(historical, "fixture-run");
+    expect(report.species.every((row) => row.catchCount === null && row.presenceState === "unknown")).toBe(true);
+  });
+
   it.each([
     ["本日の入場者数は１２３名様でした。", 123],
     ["本日の入園者数は1,234名でした。", 1234],
@@ -102,6 +134,12 @@ describe("Wanoku Ichihara Fixed-Node Collector v1 parser", () => {
       "スズキ", "フッコ", "フッコ・スズキ（モエビ餌）", "釣れた！(セイゴ)"
     ].sort((a, b) => a.localeCompare(b)));
     expect(species(report, "sardine")).toMatchObject({ catchCount: 36, presenceState: "present" });
+  });
+
+  it("keeps a trustworthy catch count while dropping a malformed source size range", () => {
+    const source = parse(detail({ rows: [["フッコ", "410.cm～43.0cm", "合計2匹"]] }), "22790");
+    const report = buildIchiharaFixedNodeReport(source, "fixture-run");
+    expect(species(report, "japanese-seabass")).toMatchObject({ catchCount: 2, minSizeCm: null, maxSizeCm: null });
   });
 
   it("maps every remaining target species while retaining unsupported chinu and kataboshi labels", () => {

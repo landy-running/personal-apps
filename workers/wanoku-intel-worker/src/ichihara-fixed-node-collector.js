@@ -206,13 +206,14 @@ export function parseIchiharaDetail({ html, sourceUrl, collectedAt }) {
   });
   const biologicalRows = rows.filter((row) => row.rowKind !== "non-fish");
   const ambiguousRows = biologicalRows.filter((row) => row.rowKind === "ambiguous");
+  const interruptionMentioned = INTERRUPTED_LANGUAGE.test(plainText);
   const operatingStatus = finality === "closure"
     ? "closed"
-    : finality === "final" && (biologicalRows.length > 0 || visitors !== null)
+    : finality === "final" && (biologicalRows.length > 0 || visitors !== null || interruptionMentioned)
       ? "operating"
       : "unknown";
   const interrupted = finality === "final"
-    && (INTERRUPTED_LANGUAGE.test(plainText) || CLOSURE_LANGUAGE.test(plainText));
+    && (interruptionMentioned || CLOSURE_LANGUAGE.test(plainText));
   const reportComplete = finality === "final"
     && operatingStatus === "operating"
     && !interrupted
@@ -252,11 +253,12 @@ export function classifyIchiharaFinality({ observationDate, collectedAt, plainTe
   const hasClosure = CLOSURE_LANGUAGE.test(plainText);
   const interrupted = INTERRUPTED_LANGUAGE.test(plainText) || (hasClosure && numericBiologicalRows.length > 0);
   if (hasClosure && !interrupted && numericBiologicalRows.length === 0) return "closure";
-  if (INTERIM_LANGUAGE.test(plainText)) return "interim";
   if (biologicalRows.some((row) => row.rowKind === "ambiguous")) return "unknown";
+  if (observationDate < currentJstDate && (interrupted || (visitors !== null && FINAL_LANGUAGE.test(plainText)))) return "final";
   if (biologicalRows.length === 0) return "unknown";
   if (observationDate < currentJstDate) return "final";
   if (observationDate > currentJstDate) return "unknown";
+  if (INTERIM_LANGUAGE.test(plainText)) return "interim";
   return visitors !== null && FINAL_LANGUAGE.test(plainText) ? "final" : "interim";
 }
 
@@ -279,7 +281,12 @@ export function parseIchiharaCatchRows(html) {
     const countMatch = /合計\s*([\d,]+)\s*匹/u.exec(countText);
     const count = countMatch ? Number(countMatch[1].replace(/,/gu, "")) : null;
     const alias = classifySourceLabel(sourceName);
-    const sizes = [...normalizeAscii(sizeText).matchAll(/\d+(?:\.\d+)?/gu)].map((entry) => Number(entry[0]));
+    const normalizedSizeText = normalizeAscii(sizeText);
+    const malformedSize = /\d+\.\s*(?:cm|cｍ|㎝)/iu.test(normalizedSizeText);
+    const parsedSizes = malformedSize
+      ? []
+      : [...normalizedSizeText.matchAll(/\d+(?:\.\d+)?/gu)].map((entry) => Number(entry[0]));
+    const sizes = parsedSizes.length > 1 && parsedSizes[0] > parsedSizes[1] ? [] : parsedSizes;
     rows.push({
       sourceName,
       speciesId: alias.speciesId,
